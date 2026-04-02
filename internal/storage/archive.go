@@ -12,11 +12,18 @@ import (
 	"time"
 )
 
+// AttachmentContent holds a single attachment for archive writing.
+type AttachmentContent struct {
+	Filename string
+	Data     []byte // raw binary content
+}
+
 // MessageContent holds the content for writing an archive.
 type MessageContent struct {
 	BodyText    string
 	BodyHTML    string
 	HeadersJSON []byte // raw JSON of headers
+	Attachments []AttachmentContent
 }
 
 // Store manages filesystem message archives.
@@ -120,6 +127,11 @@ func (s *Store) WriteMessage(accountEmail string, msgID string, content *Message
 	}
 	if len(content.HeadersJSON) > 0 {
 		if err := writeEntry("headers.json", content.HeadersJSON); err != nil {
+			return "", err
+		}
+	}
+	for _, att := range content.Attachments {
+		if err := writeEntry("attachments/"+att.Filename, att.Data); err != nil {
 			return "", err
 		}
 	}

@@ -1,18 +1,29 @@
-# MSNGR
+<p align="center">
+  <img src="docs/msngr.png" alt="MSNGR" width="200">
+</p>
 
-**MCP Secure Network Gateway Relay** — a policy-enforced mail gateway for MCP agents and human operators.
+<h1 align="center">MSNGR</h1>
+
+<p align="center"><strong>Mail Secure Network Gateway Relay — policy-enforced mail gateway for MCP agents and human operators.</strong></p>
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](https://go.dev)
+
+---
+
+## What is MSNGR?
 
 MSNGR mediates between MCP agents, operators (via web UI), and external mail infrastructure (IMAP/SMTP). It is not a general-purpose mail client — it is a controlled mediation layer with strong policy enforcement, auditability, and least-privilege access.
-
-## Features
 
 - **Policy engine** — 3-layer evaluation: config safety limits → operator-defined rules → runtime controls
 - **MCP interface** — 15 tools for agents to list, read, search, send, and manage email
 - **Operator web UI** — Dashboard, mail server/account config, agent management, rule CRUD, queue/hold operations, audit trail
-- **Agent authentication** — Bearer token auth with per-account permission scoping
+- **Agent authentication** — API token auth with per-account permission scoping
 - **Safe by default** — Deny decision when no rule matches; outbound mail goes through queue, never fire-and-forget
 - **Auditability** — Structured audit logging for all agent and operator actions
 - **Single binary** — No external dependencies beyond SQLite; embeds templates, migrations, and static assets
+
+---
 
 ## Quick Start
 
@@ -31,7 +42,7 @@ The operator web UI is available at `http://localhost:8600`. On first run, you'l
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.26+
 - SQLite 3
 - An IMAP/SMTP mail server for email connectivity
 
@@ -120,6 +131,9 @@ internal/
 
 ## Documentation
 
+- [Getting Started](docs/GETTING_STARTED.md) — First-time setup: accounts, agents, rules, and connecting an MCP client
+- [Agent Guide](docs/AGENTS.md) — Setting up and using MCP agents
+- [MCP API Reference](docs/MCP_API.md) — Complete tool reference with parameters and responses
 - [Building](docs/BUILDING.md) — Cross-compilation and release builds
 - [Specifications](docs/SPECIFICATIONS.md) — Product and architecture spec
 - [Testing](docs/TESTING.md) — End-to-end test suite

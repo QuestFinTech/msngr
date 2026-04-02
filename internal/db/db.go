@@ -73,7 +73,7 @@ func scanAccount(s scanner) (model.Account, error) {
 		&a.ServerID, &a.ServerName,
 		&a.SMTPHost, &a.SMTPPort, &a.SMTPTLS,
 		&a.IMAPHost, &a.IMAPPort, &a.IMAPTLS,
-		&a.RetrievalEnabled, &a.SendingEnabled, &a.StorageMode,
+		&a.RetrievalEnabled, &a.SendingEnabled, &a.DeleteAfterRetrieval, &a.StorageMode,
 		&a.Enabled, &a.HealthStatus, &a.CreatedAt, &a.UpdatedAt,
 	)
 	return a, err
@@ -106,9 +106,11 @@ func scanRule(s scanner) (model.Rule, error) {
 	return r, err
 }
 
-// InitSchema applies the database schema. It is idempotent and safe to call
-// on every startup since all statements use CREATE TABLE IF NOT EXISTS.
+// InitSchema applies the database schema and any pending migrations.
+// The base schema (001) uses CREATE TABLE IF NOT EXISTS so it is safe to re-run.
+// Subsequent migrations (002+) are tracked in the migrations table and applied once.
 func (db *DB) InitSchema() error {
+	// Apply base schema (always idempotent).
 	data, err := migrationsFS.ReadFile("migrations/001_schema.sql")
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
@@ -116,6 +118,36 @@ func (db *DB) InitSchema() error {
 	if _, err := db.conn.Exec(string(data)); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
+
+	// Apply incremental migrations that haven't been run yet.
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "001_schema.sql" {
+			continue
+		}
+		// Check if already applied.
+		var count int
+		db.conn.QueryRow("SELECT COUNT(*) FROM migrations WHERE filename = ?", name).Scan(&count)
+		if count > 0 {
+			continue
+		}
+		mData, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		if _, err := db.conn.Exec(string(mData)); err != nil {
+			slog.Warn("Migration already applied or skipped", "file", name, "error", err)
+		} else {
+			slog.Info("Applied migration", "file", name)
+		}
+		// Record it either way so we don't retry.
+		db.conn.Exec("INSERT OR IGNORE INTO migrations (filename) VALUES (?)", name)
+	}
+
 	slog.Info("Database schema applied")
 	return nil
 }
@@ -281,7 +313,7 @@ func (db *DB) CheckAgentAccountMapping(ctx context.Context, agentID int64, accou
 // GetQueuedItems returns up to `limit` items with status 'queued', oldest first.
 func (db *DB) GetQueuedItems(limit int) ([]model.OutboundItem, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, account_id, agent_id, correlation_id, status, from_addr, to_addrs, COALESCE(cc_addrs, ''), subject, COALESCE(body_text, ''), COALESCE(body_html, ''), created_at, updated_at, sent_at, COALESCE(error_message, '') FROM outbound_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?",
+		"SELECT id, account_id, agent_id, correlation_id, status, from_addr, to_addrs, COALESCE(cc_addrs, ''), subject, COALESCE(body_text, ''), COALESCE(body_html, ''), COALESCE(attachments_json, ''), created_at, updated_at, sent_at, COALESCE(error_message, '') FROM outbound_queue WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?",
 		limit,
 	)
 	if err != nil {
@@ -295,7 +327,7 @@ func (db *DB) GetQueuedItems(limit int) ([]model.OutboundItem, error) {
 		if err := rows.Scan(
 			&item.ID, &item.AccountID, &item.AgentID, &item.CorrelationID,
 			&item.Status, &item.FromAddr, &item.ToAddrs, &item.CcAddrs,
-			&item.Subject, &item.BodyText, &item.BodyHTML,
+			&item.Subject, &item.BodyText, &item.BodyHTML, &item.AttachmentsJSON,
 			&item.CreatedAt, &item.UpdatedAt, &item.SentAt, &item.ErrorMessage,
 		); err != nil {
 			return nil, fmt.Errorf("scan queued item: %w", err)
@@ -339,10 +371,10 @@ func (db *DB) UpdateQueueFailed(id int64, errMsg string) error {
 func (db *DB) InsertQueueItem(item *model.OutboundItem) (int64, error) {
 	now := nowUTC()
 	res, err := db.conn.Exec(
-		"INSERT INTO outbound_queue (account_id, agent_id, correlation_id, status, from_addr, to_addrs, cc_addrs, subject, body_text, body_html, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO outbound_queue (account_id, agent_id, correlation_id, status, from_addr, to_addrs, cc_addrs, subject, body_text, body_html, attachments_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		item.AccountID, item.AgentID, item.CorrelationID, item.Status,
 		item.FromAddr, item.ToAddrs, item.CcAddrs, item.Subject,
-		item.BodyText, item.BodyHTML, now, now,
+		item.BodyText, item.BodyHTML, item.AttachmentsJSON, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert queue item: %w", err)
@@ -410,13 +442,13 @@ func (db *DB) GetAccountByID(accountID int64) (*model.Account, error) {
 		`SELECT a.id, a.name, a.email_address,
 		        COALESCE(a.server_id, 0),
 		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, COALESCE(a.smtp_host, '')),
-		        COALESCE(ms.smtp_port, COALESCE(a.smtp_port, 0)),
-		        COALESCE(ms.smtp_tls, COALESCE(a.smtp_tls, 1)),
-		        COALESCE(ms.imap_host, COALESCE(a.imap_host, '')),
-		        COALESCE(ms.imap_port, COALESCE(a.imap_port, 0)),
-		        COALESCE(ms.imap_tls, COALESCE(a.imap_tls, 1)),
-		        a.retrieval_enabled, a.sending_enabled,
+		        COALESCE(ms.smtp_host, ''),
+		        COALESCE(ms.smtp_port, 0),
+		        COALESCE(ms.smtp_tls, 1),
+		        COALESCE(ms.imap_host, ''),
+		        COALESCE(ms.imap_port, 0),
+		        COALESCE(ms.imap_tls, 1),
+		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
 		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
 		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
 		 FROM accounts a
@@ -442,13 +474,13 @@ func (db *DB) GetEnabledRetrievalAccounts() ([]model.Account, error) {
 		`SELECT a.id, a.name, a.email_address,
 		        COALESCE(a.server_id, 0),
 		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, COALESCE(a.smtp_host, '')),
-		        COALESCE(ms.smtp_port, COALESCE(a.smtp_port, 0)),
-		        COALESCE(ms.smtp_tls, COALESCE(a.smtp_tls, 1)),
-		        COALESCE(ms.imap_host, COALESCE(a.imap_host, '')),
-		        COALESCE(ms.imap_port, COALESCE(a.imap_port, 0)),
-		        COALESCE(ms.imap_tls, COALESCE(a.imap_tls, 1)),
-		        a.retrieval_enabled, a.sending_enabled,
+		        COALESCE(ms.smtp_host, ''),
+		        COALESCE(ms.smtp_port, 0),
+		        COALESCE(ms.smtp_tls, 1),
+		        COALESCE(ms.imap_host, ''),
+		        COALESCE(ms.imap_port, 0),
+		        COALESCE(ms.imap_tls, 1),
+		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
 		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
 		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
 		 FROM accounts a
@@ -758,13 +790,13 @@ func (db *DB) ListAccounts() ([]model.Account, error) {
 		`SELECT a.id, a.name, a.email_address,
 		        COALESCE(a.server_id, 0),
 		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, COALESCE(a.smtp_host, '')),
-		        COALESCE(ms.smtp_port, COALESCE(a.smtp_port, 0)),
-		        COALESCE(ms.smtp_tls, COALESCE(a.smtp_tls, 1)),
-		        COALESCE(ms.imap_host, COALESCE(a.imap_host, '')),
-		        COALESCE(ms.imap_port, COALESCE(a.imap_port, 0)),
-		        COALESCE(ms.imap_tls, COALESCE(a.imap_tls, 1)),
-		        a.retrieval_enabled, a.sending_enabled,
+		        COALESCE(ms.smtp_host, ''),
+		        COALESCE(ms.smtp_port, 0),
+		        COALESCE(ms.smtp_tls, 1),
+		        COALESCE(ms.imap_host, ''),
+		        COALESCE(ms.imap_port, 0),
+		        COALESCE(ms.imap_tls, 1),
+		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
 		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
 		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
 		 FROM accounts a
@@ -821,13 +853,11 @@ func (db *DB) CreateAccount(a *model.Account) (int64, error) {
 		serverID = a.ServerID
 	}
 	res, err := db.conn.Exec(
-		`INSERT INTO accounts (name, email_address, server_id, smtp_host, smtp_port, smtp_tls, imap_host, imap_port, imap_tls, retrieval_enabled, sending_enabled, storage_mode, enabled, health_status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'unknown', ?, ?)`,
+		`INSERT INTO accounts (name, email_address, server_id, retrieval_enabled, sending_enabled, delete_after_retrieval, storage_mode, enabled, health_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'unknown', ?, ?)`,
 		a.Name, a.EmailAddress, serverID,
-		a.SMTPHost, a.SMTPPort, boolToInt(a.SMTPTLS),
-		a.IMAPHost, a.IMAPPort, boolToInt(a.IMAPTLS),
 		boolToInt(a.RetrievalEnabled), boolToInt(a.SendingEnabled),
-		a.StorageMode, now, now,
+		boolToInt(a.DeleteAfterRetrieval), a.StorageMode, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create account: %w", err)
@@ -844,12 +874,12 @@ func (db *DB) UpdateAccount(a *model.Account) error {
 	}
 	_, err := db.conn.Exec(
 		`UPDATE accounts SET name = ?, email_address = ?, server_id = ?,
-		        retrieval_enabled = ?, sending_enabled = ?,
+		        retrieval_enabled = ?, sending_enabled = ?, delete_after_retrieval = ?,
 		        storage_mode = ?, enabled = ?, updated_at = ?
 		 WHERE id = ?`,
 		a.Name, a.EmailAddress, serverID,
 		boolToInt(a.RetrievalEnabled), boolToInt(a.SendingEnabled),
-		a.StorageMode, boolToInt(a.Enabled), now, a.ID,
+		boolToInt(a.DeleteAfterRetrieval), a.StorageMode, boolToInt(a.Enabled), now, a.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update account %d: %w", a.ID, err)
@@ -1160,10 +1190,10 @@ func (db *DB) ListQueueItems(status string, limit int) ([]model.OutboundItem, er
 	var query string
 	var args []interface{}
 	if status != "" {
-		query = "SELECT id, account_id, agent_id, correlation_id, status, from_addr, to_addrs, COALESCE(cc_addrs, ''), subject, COALESCE(body_text, ''), COALESCE(body_html, ''), created_at, updated_at, sent_at, COALESCE(error_message, '') FROM outbound_queue WHERE status = ? ORDER BY created_at DESC LIMIT ?"
+		query = "SELECT id, account_id, agent_id, correlation_id, status, from_addr, to_addrs, COALESCE(cc_addrs, ''), subject, COALESCE(body_text, ''), COALESCE(body_html, ''), COALESCE(attachments_json, ''), created_at, updated_at, sent_at, COALESCE(error_message, '') FROM outbound_queue WHERE status = ? ORDER BY created_at DESC LIMIT ?"
 		args = []interface{}{status, limit}
 	} else {
-		query = "SELECT id, account_id, agent_id, correlation_id, status, from_addr, to_addrs, COALESCE(cc_addrs, ''), subject, COALESCE(body_text, ''), COALESCE(body_html, ''), created_at, updated_at, sent_at, COALESCE(error_message, '') FROM outbound_queue ORDER BY created_at DESC LIMIT ?"
+		query = "SELECT id, account_id, agent_id, correlation_id, status, from_addr, to_addrs, COALESCE(cc_addrs, ''), subject, COALESCE(body_text, ''), COALESCE(body_html, ''), COALESCE(attachments_json, ''), created_at, updated_at, sent_at, COALESCE(error_message, '') FROM outbound_queue ORDER BY created_at DESC LIMIT ?"
 		args = []interface{}{limit}
 	}
 
@@ -1179,7 +1209,7 @@ func (db *DB) ListQueueItems(status string, limit int) ([]model.OutboundItem, er
 		if err := rows.Scan(
 			&item.ID, &item.AccountID, &item.AgentID, &item.CorrelationID,
 			&item.Status, &item.FromAddr, &item.ToAddrs, &item.CcAddrs,
-			&item.Subject, &item.BodyText, &item.BodyHTML,
+			&item.Subject, &item.BodyText, &item.BodyHTML, &item.AttachmentsJSON,
 			&item.CreatedAt, &item.UpdatedAt, &item.SentAt, &item.ErrorMessage,
 		); err != nil {
 			return nil, fmt.Errorf("scan queue item: %w", err)
@@ -1411,12 +1441,13 @@ func (db *DB) ListAllTokens() ([]model.AgentToken, error) {
 func (db *DB) ListAccountsForAgent(agentID int64) ([]model.Account, error) {
 	rows, err := db.conn.Query(
 		`SELECT DISTINCT acc.id, acc.name, acc.email_address, COALESCE(acc.server_id, 0),
-		        COALESCE(acc.smtp_host, ''), COALESCE(acc.smtp_port, 0), COALESCE(acc.smtp_tls, 1),
-		        COALESCE(acc.imap_host, ''), COALESCE(acc.imap_port, 0), COALESCE(acc.imap_tls, 1),
+		        COALESCE(ms.smtp_host, ''), COALESCE(ms.smtp_port, 0), COALESCE(ms.smtp_tls, 1),
+		        COALESCE(ms.imap_host, ''), COALESCE(ms.imap_port, 0), COALESCE(ms.imap_tls, 1),
 		        acc.retrieval_enabled, acc.sending_enabled, acc.storage_mode, acc.enabled,
 		        acc.health_status, acc.created_at, acc.updated_at
 		 FROM accounts acc
 		 JOIN agent_permissions ap ON ap.account_id = acc.id
+		 LEFT JOIN mail_servers ms ON ms.id = acc.server_id
 		 WHERE ap.agent_id = ? AND acc.enabled = 1
 		 ORDER BY acc.name ASC`, agentID)
 	if err != nil {

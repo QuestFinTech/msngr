@@ -7,8 +7,81 @@ import (
 	"net"
 	"time"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/luxemque/msngr/internal/model"
 	"github.com/luxemque/msngr/internal/queue"
 )
+
+// toolLogin authenticates an agent via login_email + token and creates a session.
+// This is the only unauthenticated MCP tool — it is NOT wrapped with withAuth.
+func (s *Server) toolLogin(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+	params := parseArgs(req)
+	loginEmail := paramString(params, "login_email")
+	token := paramString(params, "token")
+
+	if loginEmail == "" || token == "" {
+		return convertResponse(errorResponse("INVALID_PARAMS", "login_email and token are required")), nil
+	}
+
+	// Look up the token and verify it belongs to the claimed agent email.
+	agentToken, err := s.db.LookupAgentToken(token)
+	if err != nil {
+		slog.Error("login token lookup failed", "error", err)
+		return convertResponse(errorResponse("AUTHENTICATION_FAILED", "invalid credentials")), nil
+	}
+	if agentToken == nil {
+		return convertResponse(errorResponse("AUTHENTICATION_FAILED", "invalid credentials")), nil
+	}
+
+	// Verify the token's agent matches the login_email.
+	if agentToken.AgentEmail != loginEmail {
+		slog.Warn("login email mismatch", "login_email", loginEmail, "token_agent_email", agentToken.AgentEmail)
+		return convertResponse(errorResponse("AUTHENTICATION_FAILED", "invalid credentials")), nil
+	}
+
+	// Build full agent record.
+	agent, err := s.db.GetAgentByID(agentToken.AgentID)
+	if err != nil || agent == nil {
+		slog.Error("login agent lookup failed", "agent_id", agentToken.AgentID, "error", err)
+		return convertResponse(errorResponse("INTERNAL_ERROR", "failed to look up agent")), nil
+	}
+
+	session := &model.MCPSession{
+		Agent:           agent,
+		Token:           agentToken,
+		AuthenticatedAt: time.Now(),
+	}
+
+	// Update last-used timestamp (fire-and-forget).
+	go func() {
+		if err := s.db.UpdateTokenLastUsed(agentToken.ID); err != nil {
+			slog.Error("update token last used", "error", err)
+		}
+	}()
+
+	// Store session keyed by MCP session ID.
+	if req.Session != nil {
+		sessionID := req.Session.ID()
+		if sessionID != "" {
+			s.sessionsMu.Lock()
+			s.sessions[sessionID] = session
+			s.sessionsMu.Unlock()
+		}
+	}
+
+	slog.Info("MCP login successful", "agent", agent.DisplayName, "email", agent.AgentEmail)
+
+	return convertResponse(&ToolResponse{
+		OK:      true,
+		Message: fmt.Sprintf("authenticated as %s (%s)", agent.DisplayName, agent.AgentEmail),
+		Data: map[string]interface{}{
+			"agent_id":     agent.ID,
+			"display_name": agent.DisplayName,
+			"agent_email":  agent.AgentEmail,
+		},
+	}), nil
+}
 
 // toolListHolds returns holds with the given status.
 func (s *Server) toolListHolds(_ context.Context, params map[string]interface{}) *ToolResponse {

@@ -161,6 +161,7 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 	slog.Info("imap poller: fetched candidates", "account_id", acct.ID, "count", len(envelopes))
 
 	var inserted int
+	var retrievedUIDs []uint32 // UIDs successfully retrieved (for delete-after-retrieval)
 	for _, env := range envelopes {
 		// Generate a synthetic Message-ID when the envelope lacks one,
 		// using IMAP UID + UIDValidity to avoid UNIQUE constraint collisions.
@@ -217,11 +218,17 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 				BodyHTML: fetchedHTML,
 			}
 
-			// For "full" mode, fetch attachment metadata.
-			// Note: actual attachment data download is not yet supported by the IMAP adapter.
+			// For "full" mode, fetch actual attachment data and include in the archive.
 			if acct.StorageMode == "full" {
-				if _, err := client.FetchAttachments(env.UID); err != nil {
-					slog.Error("imap poller: fetch attachments failed", "account_id", acct.ID, "uid", env.UID, "error", err)
+				attData, err := client.FetchAttachmentData(env.UID)
+				if err != nil {
+					slog.Error("imap poller: fetch attachment data failed", "account_id", acct.ID, "uid", env.UID, "error", err)
+				}
+				for _, att := range attData {
+					content.Attachments = append(content.Attachments, storage.AttachmentContent{
+						Filename: att.Filename,
+						Data:     att.Data,
+					})
 				}
 			}
 
@@ -242,12 +249,22 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 			continue
 		}
 		inserted++
+		retrievedUIDs = append(retrievedUIDs, env.UID)
 
 		// Fallback: store body in DB when filesystem storage is not available.
 		if bodyFetched && !msg.StoredOnDisk && (fetchedText != "" || fetchedHTML != "") {
 			if err := p.db.InsertMessageBody(msgID, fetchedText, fetchedHTML); err != nil {
 				slog.Error("imap poller: insert body failed", "account_id", acct.ID, "uid", env.UID, "error", err)
 			}
+		}
+	}
+
+	// Delete retrieved messages from the mail server if configured.
+	if acct.DeleteAfterRetrieval && len(retrievedUIDs) > 0 {
+		if err := client.DeleteMessages(retrievedUIDs); err != nil {
+			slog.Error("imap poller: delete after retrieval failed", "account_id", acct.ID, "count", len(retrievedUIDs), "error", err)
+		} else {
+			slog.Info("imap poller: deleted retrieved messages from server", "account_id", acct.ID, "count", len(retrievedUIDs))
 		}
 	}
 

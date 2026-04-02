@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -61,6 +62,37 @@ func (s *Server) buildSendAction(ctx context.Context, params map[string]interfac
 	toAddrs := splitAddrs(to)
 	ccAddrs := splitAddrs(cc)
 
+	// Parse attachments if provided.
+	var policyAttachments []policy.AttachmentInfo
+	if raw, ok := params["attachments"]; ok && raw != nil {
+		attJSON, err := json.Marshal(raw)
+		if err != nil {
+			return nil, errorResponse("INVALID_PARAMS", "invalid attachments format")
+		}
+		var atts []model.Attachment
+		if err := json.Unmarshal(attJSON, &atts); err != nil {
+			return nil, errorResponse("INVALID_PARAMS", "invalid attachments: "+err.Error())
+		}
+		for _, a := range atts {
+			if a.Filename == "" || a.ContentBase64 == "" {
+				return nil, errorResponse("INVALID_PARAMS", "each attachment requires filename and content_base64")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(a.ContentBase64)
+			if err != nil {
+				return nil, errorResponse("INVALID_PARAMS", "invalid base64 in attachment "+a.Filename)
+			}
+			mimeType := a.MimeType
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+			policyAttachments = append(policyAttachments, policy.AttachmentInfo{
+				Filename: a.Filename,
+				MimeType: mimeType,
+				Size:     int64(len(decoded)),
+			})
+		}
+	}
+
 	action := &policy.Action{
 		Type:           "send",
 		AgentName:      session.Agent.DisplayName,
@@ -71,6 +103,7 @@ func (s *Server) buildSendAction(ctx context.Context, params map[string]interfac
 		CcAddrs:        ccAddrs,
 		Subject:        subject,
 		BodyText:       bodyText,
+		Attachments:    policyAttachments,
 	}
 	return action, nil
 }
@@ -92,14 +125,22 @@ func (s *Server) toolRequestSend(ctx context.Context, params map[string]interfac
 	ccJSON := marshalAddrs(action.CcAddrs)
 	bodyHTML := paramString(params, "body_html")
 
+	// Marshal attachments JSON for storage.
+	var attachmentsJSON string
+	if raw, ok := params["attachments"]; ok && raw != nil {
+		attJSON, _ := json.Marshal(raw)
+		attachmentsJSON = string(attJSON)
+	}
+
 	item := &model.OutboundItem{
-		AccountID: action.AccountID,
-		FromAddr:  action.FromAddr,
-		ToAddrs:   toJSON,
-		CcAddrs:   ccJSON,
-		Subject:   action.Subject,
-		BodyText:  action.BodyText,
-		BodyHTML:  bodyHTML,
+		AccountID:       action.AccountID,
+		FromAddr:        action.FromAddr,
+		ToAddrs:         toJSON,
+		CcAddrs:         ccJSON,
+		Subject:         action.Subject,
+		BodyText:        action.BodyText,
+		BodyHTML:        bodyHTML,
+		AttachmentsJSON: attachmentsJSON,
 	}
 
 	session := getSession(ctx)

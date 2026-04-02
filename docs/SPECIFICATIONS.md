@@ -1,7 +1,7 @@
 # Product & Architecture Specification
 
 **Project:** MSNGR
-**Expansion:** MCP Secure Mail Gateway Relay
+**Expansion:** Mail Secure Network Gateway Relay
 **Status:** Product and architecture specification for first implementation
 
 ## 1. Purpose

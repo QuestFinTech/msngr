@@ -3,8 +3,11 @@
 package imap
 
 import (
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
+	"mime/quotedprintable"
 	"strings"
 	"time"
 
@@ -24,6 +27,13 @@ type MessageEnvelope struct {
 	Date        time.Time
 	Size        int64
 	Flags       []string
+}
+
+// AttachmentData holds the full content of a fetched attachment.
+type AttachmentData struct {
+	Filename string
+	MimeType string
+	Data     []byte // raw binary content
 }
 
 // AttachmentMeta holds metadata for a message attachment.
@@ -323,6 +333,161 @@ func (c *Client) FetchAttachments(uid uint32) ([]AttachmentMeta, error) {
 	})
 
 	return attachments, nil
+}
+
+// FetchAttachmentData fetches the actual binary content of all attachments for the given UID.
+// It walks the BODYSTRUCTURE, identifies attachment parts, fetches their raw data,
+// and returns them with proper binary decoding handled by the IMAP server.
+func (c *Client) FetchAttachmentData(uid uint32) ([]AttachmentData, error) {
+	uidSet := imap.UIDSetNum(imap.UID(uid))
+
+	// First fetch body structure to find attachment part paths.
+	structOpts := &imap.FetchOptions{
+		UID:           true,
+		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+	}
+
+	structCmd := c.inner.Fetch(uidSet, structOpts)
+	structMsgs, err := structCmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap fetch bodystructure uid=%d: %w", uid, err)
+	}
+	if len(structMsgs) == 0 {
+		return nil, nil
+	}
+
+	bs := structMsgs[0].BodyStructure
+	if bs == nil {
+		return nil, nil
+	}
+
+	// Collect attachment part paths, metadata, and encoding.
+	type attInfo struct {
+		path     []int
+		filename string
+		mimeType string
+		encoding string // content-transfer-encoding (base64, quoted-printable, 7bit, 8bit, binary)
+	}
+	var parts []attInfo
+
+	bs.Walk(func(path []int, part imap.BodyStructure) bool {
+		sp, ok := part.(*imap.BodyStructureSinglePart)
+		if !ok {
+			return true
+		}
+
+		disp := sp.Disposition()
+		isAttachment := disp != nil && strings.EqualFold(disp.Value, "attachment")
+		filename := sp.Filename()
+
+		if !isAttachment && filename == "" {
+			return true
+		}
+
+		p := make([]int, len(path))
+		copy(p, path)
+		parts = append(parts, attInfo{
+			path:     p,
+			filename: filename,
+			mimeType: sp.MediaType(),
+			encoding: strings.ToLower(sp.Encoding),
+		})
+		return true
+	})
+
+	if len(parts) == 0 {
+		return nil, nil
+	}
+
+	// Fetch the raw decoded content for each attachment part.
+	fetchOpts := &imap.FetchOptions{UID: true}
+	var sections []*imap.FetchItemBodySection
+	for _, p := range parts {
+		sec := &imap.FetchItemBodySection{
+			Part:      p.path,
+			Specifier: imap.PartSpecifierNone,
+			Peek:      true,
+		}
+		sections = append(sections, sec)
+		fetchOpts.BodySection = append(fetchOpts.BodySection, sec)
+	}
+
+	bodyCmd := c.inner.Fetch(uidSet, fetchOpts)
+	bodyMsgs, err := bodyCmd.Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imap fetch attachment data uid=%d: %w", uid, err)
+	}
+	if len(bodyMsgs) == 0 {
+		return nil, nil
+	}
+
+	// Match fetched sections back to our part metadata by path,
+	// decoding content-transfer-encoding to get raw binary data.
+	var attachments []AttachmentData
+	for _, sec := range bodyMsgs[0].BodySection {
+		for _, p := range parts {
+			if intSliceEqual(sec.Section.Part, p.path) {
+				data, err := decodeTransferEncoding(sec.Bytes, p.encoding)
+				if err != nil {
+					slog.Warn("imap: failed to decode attachment transfer encoding",
+						"uid", uid, "filename", p.filename, "encoding", p.encoding, "error", err)
+					data = sec.Bytes // fall back to raw bytes
+				}
+				attachments = append(attachments, AttachmentData{
+					Filename: p.filename,
+					MimeType: p.mimeType,
+					Data:     data,
+				})
+				break
+			}
+		}
+	}
+
+	return attachments, nil
+}
+
+// decodeTransferEncoding decodes MIME content-transfer-encoding to raw bytes.
+func decodeTransferEncoding(raw []byte, encoding string) ([]byte, error) {
+	switch encoding {
+	case "base64":
+		return io.ReadAll(base64.NewDecoder(base64.StdEncoding, strings.NewReader(string(raw))))
+	case "quoted-printable":
+		return io.ReadAll(quotedprintable.NewReader(strings.NewReader(string(raw))))
+	default:
+		// 7bit, 8bit, binary — no decoding needed.
+		return raw, nil
+	}
+}
+
+// DeleteMessages flags the given UIDs as \Deleted and expunges them from the mailbox.
+func (c *Client) DeleteMessages(uids []uint32) error {
+	if len(uids) == 0 {
+		return nil
+	}
+
+	// Build a UID set from the list.
+	var uidSet imap.UIDSet
+	for _, uid := range uids {
+		uidSet.AddNum(imap.UID(uid))
+	}
+
+	// Add \Deleted flag.
+	storeCmd := c.inner.Store(uidSet, &imap.StoreFlags{
+		Op:     imap.StoreFlagsAdd,
+		Silent: true,
+		Flags:  []imap.Flag{imap.FlagDeleted},
+	}, nil)
+	if _, err := storeCmd.Collect(); err != nil {
+		return fmt.Errorf("imap store \\Deleted: %w", err)
+	}
+
+	// Expunge the flagged messages.
+	if err := c.inner.UIDExpunge(uidSet).Close(); err != nil {
+		return fmt.Errorf("imap uid expunge: %w", err)
+	}
+
+	slog.Info("imap: deleted messages from server", "count", len(uids))
+	return nil
 }
 
 // Close logs out and closes the underlying connection.

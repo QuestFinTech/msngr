@@ -839,14 +839,15 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 				serverID, _ := strconv.ParseInt(r.FormValue("server_id"), 10, 64)
 				emailAddr := strings.TrimSpace(r.FormValue("email_address"))
 				a := &model.Account{
-					ID:               accountID,
-					Name:             emailAddr,
-					EmailAddress:     emailAddr,
-					ServerID:         serverID,
-					RetrievalEnabled: r.FormValue("retrieval_enabled") == "1",
-					SendingEnabled:   r.FormValue("sending_enabled") == "1",
-					StorageMode:      r.FormValue("storage_mode"),
-					Enabled:          r.FormValue("enabled") == "1",
+					ID:                   accountID,
+					Name:                 emailAddr,
+					EmailAddress:         emailAddr,
+					ServerID:             serverID,
+					RetrievalEnabled:     r.FormValue("retrieval_enabled") == "1",
+					SendingEnabled:       r.FormValue("sending_enabled") == "1",
+					DeleteAfterRetrieval: r.FormValue("delete_after_retrieval") == "1",
+					StorageMode:          r.FormValue("storage_mode"),
+					Enabled:              r.FormValue("enabled") == "1",
 				}
 				if a.EmailAddress == "" {
 					pd.Error = "Email address is required."
@@ -872,12 +873,13 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 				serverID, _ := strconv.ParseInt(r.FormValue("server_id"), 10, 64)
 				emailAddr := strings.TrimSpace(r.FormValue("email_address"))
 				a := &model.Account{
-					Name:             emailAddr,
-					EmailAddress:     emailAddr,
-					ServerID:         serverID,
-					RetrievalEnabled: r.FormValue("retrieval_enabled") == "1",
-					SendingEnabled:   r.FormValue("sending_enabled") == "1",
-					StorageMode:      r.FormValue("storage_mode"),
+					Name:                 emailAddr,
+					EmailAddress:         emailAddr,
+					ServerID:             serverID,
+					RetrievalEnabled:     r.FormValue("retrieval_enabled") == "1",
+					SendingEnabled:       r.FormValue("sending_enabled") == "1",
+					DeleteAfterRetrieval: r.FormValue("delete_after_retrieval") == "1",
+					StorageMode:          r.FormValue("storage_mode"),
 				}
 				if a.EmailAddress == "" {
 					pd.Error = "Email address is required."

@@ -122,11 +122,12 @@
                 <div class="flex-gap-12 mb-8">
                     <label><input type="checkbox" name="retrieval_enabled" value="1" {{if .Data.EditAccount}}{{if .Data.EditAccount.RetrievalEnabled}}checked{{end}}{{end}}> Retrieval enabled</label>
                     <label><input type="checkbox" name="sending_enabled" value="1" {{if .Data.EditAccount}}{{if .Data.EditAccount.SendingEnabled}}checked{{end}}{{end}}> Sending enabled</label>
+                    <label><input type="checkbox" name="delete_after_retrieval" value="1" {{if .Data.EditAccount}}{{if .Data.EditAccount.DeleteAfterRetrieval}}checked{{end}}{{end}}> Delete retrieved emails from mailbox</label>
                     {{if .Data.EditAccount}}
                     <label><input type="checkbox" name="enabled" value="1" {{if .Data.EditAccount.Enabled}}checked{{end}}> Account enabled</label>
                     {{end}}
                 </div>
-                <div class="form-hint mb-24">Retrieval: MSNGR polls this account for new messages. Sending: agents can send email through this account.</div>
+                <div class="form-hint mb-24">Retrieval: MSNGR polls this account for new messages. Sending: agents can send email through this account. Delete after retrieval: removes messages from the mail server after MSNGR has successfully stored them.</div>
 
                 <div class="flex-gap-8">
                     {{if .Data.EditAccount}}

@@ -89,7 +89,7 @@ func NewServer(database *db.DB, policyEngine *policy.Engine, store *storage.Stor
 	}
 	impl := &sdkmcp.Implementation{
 		Name:    "msngr",
-		Title:   "MSNGR — MCP Secure Network Gateway Relay",
+		Title:   "MSNGR — Mail Secure Network Gateway Relay",
 		Version: version,
 	}
 	mcpServer := sdkmcp.NewServer(impl, nil)
@@ -244,6 +244,29 @@ func requireAccountSelected(session *model.MCPSession) *ToolResponse {
 // --- Tool registration ---
 
 func (s *Server) registerTools(mcpServer *sdkmcp.Server) {
+	// Session — unauthenticated (this is the login entry point)
+	mcpServer.AddTool(
+		&sdkmcp.Tool{
+			Name:        "msngr_login",
+			Description: "Authenticate with the MSNGR gateway using agent email and API token. Must be called before any other tool.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"login_email": map[string]interface{}{
+						"type":        "string",
+						"description": "Agent email address (e.g. claude@sys.lu)",
+					},
+					"token": map[string]interface{}{
+						"type":        "string",
+						"description": "API token for the agent",
+					},
+				},
+				"required": []string{"login_email", "token"},
+			},
+		},
+		s.toolLogin, // No withAuth — this IS the authentication tool
+	)
+
 	// Inbound
 	mcpServer.AddTool(
 		&sdkmcp.Tool{
@@ -333,6 +356,28 @@ func (s *Server) registerTools(mcpServer *sdkmcp.Server) {
 					"cc": map[string]interface{}{
 						"type":        "string",
 						"description": "Comma-separated CC addresses",
+					},
+					"attachments": map[string]interface{}{
+						"type":        "array",
+						"description": "File attachments (base64-encoded)",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"filename": map[string]interface{}{
+									"type":        "string",
+									"description": "Filename including extension (e.g. report.pdf)",
+								},
+								"mime_type": map[string]interface{}{
+									"type":        "string",
+									"description": "MIME type (e.g. application/pdf). Defaults to application/octet-stream",
+								},
+								"content_base64": map[string]interface{}{
+									"type":        "string",
+									"description": "File content encoded as base64",
+								},
+							},
+							"required": []string{"filename", "content_base64"},
+						},
 					},
 				},
 				"required": []string{"to", "subject", "body_text"},

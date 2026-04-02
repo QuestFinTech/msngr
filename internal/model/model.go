@@ -43,9 +43,10 @@ type Account struct {
 	IMAPHost          string `json:"imap_host"`
 	IMAPPort          int    `json:"imap_port"`
 	IMAPTLS           bool   `json:"imap_tls"`
-	RetrievalEnabled  bool   `json:"retrieval_enabled"`
-	SendingEnabled    bool   `json:"sending_enabled"`
-	StorageMode       string `json:"storage_mode"` // metadata, headers, body, full
+	RetrievalEnabled      bool   `json:"retrieval_enabled"`
+	SendingEnabled        bool   `json:"sending_enabled"`
+	DeleteAfterRetrieval  bool   `json:"delete_after_retrieval"`
+	StorageMode           string `json:"storage_mode"` // metadata, headers, body, full
 	Enabled           bool   `json:"enabled"`
 	HealthStatus      string `json:"health_status"`
 	CreatedAt         string `json:"created_at"`
@@ -120,11 +121,19 @@ type OutboundItem struct {
 	CcAddrs       string  `json:"cc_addrs"`
 	Subject       string  `json:"subject"`
 	BodyText      string  `json:"body_text"`
-	BodyHTML      string  `json:"body_html"`
-	CreatedAt     string  `json:"created_at"`
+	BodyHTML         string  `json:"body_html"`
+	AttachmentsJSON  string  `json:"attachments_json,omitempty"` // JSON array of Attachment objects
+	CreatedAt        string  `json:"created_at"`
 	UpdatedAt     string  `json:"updated_at"`
 	SentAt        *string `json:"sent_at,omitempty"`
 	ErrorMessage  string  `json:"error_message,omitempty"`
+}
+
+// Attachment represents a file attached to an outbound message.
+type Attachment struct {
+	Filename      string `json:"filename"`
+	MimeType      string `json:"mime_type"`
+	ContentBase64 string `json:"content_base64"`
 }
 
 // Hold represents a held outbound item pending review.

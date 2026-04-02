@@ -10,7 +10,7 @@ RUNDIR  := run
 
 ## help: Show this help message
 help:
-	@echo "MSNGR — MCP Secure Network Gateway Relay"
+	@echo "MSNGR — Mail Secure Network Gateway Relay"
 	@echo ""
 	@sed -n 's/^## //p' $(MAKEFILE_LIST) | column -t -s ':'
 	@echo ""
@@ -96,7 +96,8 @@ check: fmt vet test
 
 # --- Clean ---
 
-## clean: Remove binary, database, and dist/
+## clean: Remove binary, database, storage, and dist/
 clean:
 	rm -rf $(RUNDIR)/msngr $(RUNDIR)/msngr.db $(RUNDIR)/msngr.db-shm $(RUNDIR)/msngr.db-wal
+	rm -rf $(RUNDIR)/storage
 	rm -rf $(DISTDIR)

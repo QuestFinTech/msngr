@@ -73,7 +73,7 @@ func (p *Processor) processTick(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			p.processItem(item.ID, item.AccountID, item.FromAddr, item.ToAddrs, item.CcAddrs, item.Subject, item.BodyText, item.BodyHTML)
+			p.processItem(item.ID, item.AccountID, item.FromAddr, item.ToAddrs, item.CcAddrs, item.Subject, item.BodyText, item.BodyHTML, item.AttachmentsJSON)
 		}()
 	}
 
@@ -81,7 +81,7 @@ func (p *Processor) processTick(ctx context.Context) {
 }
 
 // processItem handles delivery of a single outbound queue item.
-func (p *Processor) processItem(queueID, accountID int64, fromAddr, toAddrsJSON, ccAddrsJSON, subject, bodyText, bodyHTML string) {
+func (p *Processor) processItem(queueID, accountID int64, fromAddr, toAddrsJSON, ccAddrsJSON, subject, bodyText, bodyHTML, attachmentsJSON string) {
 	logger := slog.With("queue_id", queueID, "account_id", accountID)
 
 	// Mark as sending.
@@ -123,15 +123,37 @@ func (p *Processor) processItem(queueID, accountID int64, fromAddr, toAddrsJSON,
 		}
 	}
 
+	// Parse attachments if present.
+	var smtpAttachments []smtpAdapter.SendAttachment
+	if attachmentsJSON != "" {
+		var atts []struct {
+			Filename      string `json:"filename"`
+			MimeType      string `json:"mime_type"`
+			ContentBase64 string `json:"content_base64"`
+		}
+		if err := json.Unmarshal([]byte(attachmentsJSON), &atts); err != nil {
+			p.failItem(logger, queueID, "parse attachments: "+err.Error())
+			return
+		}
+		for _, a := range atts {
+			smtpAttachments = append(smtpAttachments, smtpAdapter.SendAttachment{
+				Filename:      a.Filename,
+				MimeType:      a.MimeType,
+				ContentBase64: a.ContentBase64,
+			})
+		}
+	}
+
 	// Create SMTP client and send.
 	client := smtpAdapter.NewClient(account.SMTPHost, account.SMTPPort, account.SMTPTLS)
 	req := &smtpAdapter.SendRequest{
-		From:    fromAddr,
-		To:      toAddrs,
-		Cc:      ccAddrs,
-		Subject: subject,
-		Text:    bodyText,
-		HTML:    bodyHTML,
+		From:        fromAddr,
+		To:          toAddrs,
+		Cc:          ccAddrs,
+		Subject:     subject,
+		Text:        bodyText,
+		HTML:        bodyHTML,
+		Attachments: smtpAttachments,
 	}
 
 	result := client.Send(username, password, req)

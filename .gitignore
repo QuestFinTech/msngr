@@ -54,6 +54,7 @@ msngr
 # Project-local Claude/agent config
 CLAUDE.md
 AGENTS.md
+!docs/AGENTS.md
 
 # Editor/IDE
 # .idea/
