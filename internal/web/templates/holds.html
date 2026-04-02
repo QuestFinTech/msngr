@@ -1,0 +1,95 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Held Messages</h1>
+        </div>
+
+        <p class="text-secondary fs-14">When a policy rule triggers a <strong>hold</strong>, the message is paused here for your review before it can be sent. This is a safety mechanism — it lets you inspect messages that match sensitive rules before they leave the system.</p>
+        <p class="text-secondary fs-14"><strong>Release</strong> sends the message back to the queue for delivery. <strong>Deny</strong> permanently blocks it. Both actions are recorded in the audit trail.</p>
+
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+        <div class="card mb-16">
+            <form method="GET" action="/holds">
+                <div class="flex-gap-12">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Status</label>
+                        <select name="status">
+                            <option value=""{{if eq .Data.StatusFilter ""}} selected{{end}}>All</option>
+                            <option value="pending"{{if eq .Data.StatusFilter "pending"}} selected{{end}}>Pending</option>
+                            <option value="approved"{{if eq .Data.StatusFilter "approved"}} selected{{end}}>Released</option>
+                            <option value="rejected"{{if eq .Data.StatusFilter "rejected"}} selected{{end}}>Denied</option>
+                        </select>
+                    </div>
+                    <div class="form-group mb-0">
+                        <label>&nbsp;</label>
+                        <button type="submit" class="btn">Filter</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            {{if .Data.Holds}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Queue ID</th>
+                        <th>Rule ID</th>
+                        <th>Reason</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Holds}}
+                    <tr>
+                        <td class="fs-13 text-secondary">{{.ID}}</td>
+                        <td class="fs-13 text-secondary">{{.QueueID}}</td>
+                        <td class="fs-13 text-secondary">{{.RuleID}}</td>
+                        <td>{{.Reason}}</td>
+                        <td>
+                            {{if eq .Status "pending"}}<span class="badge badge-pending">pending</span>
+                            {{else if eq .Status "approved"}}<span class="badge badge-active">released</span>
+                            {{else if eq .Status "rejected"}}<span class="badge badge-inactive">denied</span>
+                            {{else}}<span class="badge">{{.Status}}</span>
+                            {{end}}
+                        </td>
+                        <td class="fs-13 text-secondary">{{.CreatedAt}}</td>
+                        <td>
+                            {{if eq .Status "pending"}}
+                            <div class="flex-gap-8">
+                                <form method="POST" action="/holds" class="inline-form">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="approve">
+                                    <input type="hidden" name="id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-primary btn-sm">Release</button>
+                                </form>
+                                <form method="POST" action="/holds" class="inline-form">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="reject">
+                                    <input type="hidden" name="id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-danger btn-sm">Deny</button>
+                                </form>
+                            </div>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">
+                <p class="text-muted">No held messages found.</p>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}

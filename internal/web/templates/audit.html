@@ -1,0 +1,106 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Audit Trail</h1>
+        </div>
+
+        <p class="text-secondary fs-14">The audit trail records every important action in MSNGR — who requested what, what was decided, and when. Use this to investigate incidents, verify compliance, or understand why a message was blocked or held.</p>
+
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+        <div class="card mb-16">
+            <form method="GET" action="/audit">
+                <div class="flex-gap-12 mb-12">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Actor Type</label>
+                        <select name="actor_type">
+                            <option value=""{{if eq .Data.ActorTypeFilter ""}} selected{{end}}>All</option>
+                            <option value="system"{{if eq .Data.ActorTypeFilter "system"}} selected{{end}}>System</option>
+                            <option value="operator"{{if eq .Data.ActorTypeFilter "operator"}} selected{{end}}>Operator</option>
+                            <option value="agent"{{if eq .Data.ActorTypeFilter "agent"}} selected{{end}}>Agent</option>
+                        </select>
+                        <div class="form-hint">Who performed the action</div>
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>Action</label>
+                        <input type="text" name="action" value="{{.Data.ActionFilter}}" placeholder="e.g. send_requested">
+                        <div class="form-hint">e.g. send_requested, message_held, hold_approved</div>
+                    </div>
+                </div>
+                <div class="flex-gap-12">
+                    <div class="form-group mb-0 flex-1">
+                        <label>From</label>
+                        <input type="date" name="from" value="{{.Data.FromDate}}">
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>To</label>
+                        <input type="date" name="to" value="{{.Data.ToDate}}">
+                    </div>
+                    <div class="form-group mb-0">
+                        <label>&nbsp;</label>
+                        <button type="submit" class="btn">Filter</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            {{if .Data.Events}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Actor Type</th>
+                        <th>Actor ID</th>
+                        <th>Action</th>
+                        <th>Target</th>
+                        <th>Outcome</th>
+                        <th>Correlation ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Events}}
+                    <tr>
+                        <td class="fs-13 text-secondary">{{.CreatedAt}}</td>
+                        <td><span class="badge badge-info">{{.ActorType}}</span></td>
+                        <td class="fs-13">{{.ActorID}}</td>
+                        <td>{{.Action}}</td>
+                        <td class="fs-13 text-secondary">{{if .TargetType}}{{.TargetType}}:{{.TargetID}}{{else}}&mdash;{{end}}</td>
+                        <td>
+                            {{if eq .Outcome "success"}}<span class="badge badge-active">success</span>
+                            {{else if eq .Outcome "denied"}}<span class="badge badge-inactive">denied</span>
+                            {{else if eq .Outcome "error"}}<span class="badge badge-inactive">error</span>
+                            {{else}}<span class="badge badge-pending">{{.Outcome}}</span>
+                            {{end}}
+                        </td>
+                        <td class="fs-13 text-muted">{{if .CorrelationID}}{{.CorrelationID}}{{else}}&mdash;{{end}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+
+            <div style="display:flex; justify-content:space-between; padding:16px;">
+                {{if gt .Data.Page 1}}
+                <a href="/audit?page={{.Data.PrevPage}}{{if .Data.ActorTypeFilter}}&actor_type={{.Data.ActorTypeFilter}}{{end}}{{if .Data.ActionFilter}}&action={{.Data.ActionFilter}}{{end}}{{if .Data.FromDate}}&from={{.Data.FromDate}}{{end}}{{if .Data.ToDate}}&to={{.Data.ToDate}}{{end}}" class="btn btn-sm">Previous</a>
+                {{else}}
+                <span></span>
+                {{end}}
+                <span class="fs-13 text-secondary" style="align-self:center;">Page {{.Data.Page}} of {{.Data.TotalPages}}</span>
+                {{if lt .Data.Page .Data.TotalPages}}
+                <a href="/audit?page={{.Data.NextPage}}{{if .Data.ActorTypeFilter}}&actor_type={{.Data.ActorTypeFilter}}{{end}}{{if .Data.ActionFilter}}&action={{.Data.ActionFilter}}{{end}}{{if .Data.FromDate}}&from={{.Data.FromDate}}{{end}}{{if .Data.ToDate}}&to={{.Data.ToDate}}{{end}}" class="btn btn-sm">Next</a>
+                {{else}}
+                <span></span>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="empty-state">
+                <p class="text-muted">No audit events found.</p>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}

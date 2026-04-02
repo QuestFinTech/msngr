@@ -1,0 +1,44 @@
+# MSNGR — Minimal bootstrap configuration.
+# All dynamic config (accounts, rules, policies, agents) lives in SQLite.
+
+listen: ":8600"
+
+db:
+  path: ./msngr.db
+
+# Filesystem path for message archive storage (tar.gz files).
+storage_path: ./storage
+
+# Encryption key for secrets at rest.
+# Reference an env var so the key never appears in this file.
+encryption_key: "${MSNGR_ENCRYPTION_KEY}"
+
+log:
+  level: info   # debug, info, warn, error
+
+ticks:
+  imap_poll_ms: 30000       # IMAP polling interval
+  queue_process_ms: 10000   # Outbound queue processing interval
+  maintenance_ms: 300000    # Retention/cleanup interval
+
+# Session timeouts
+session:
+  mcp_timeout_minutes: 60          # MCP agent session expiry (also configurable in Settings)
+  operator_timeout_minutes: 1440   # Web UI operator session expiry (24 hours)
+
+# Layer A hard policy — safety limits (cannot be changed from the web UI)
+hard_policy:
+  max_message_size_mb: 25
+  max_recipients: 50
+  deny_domains: []
+  forbidden_extensions:
+    - .exe
+    - .bat
+    - .cmd
+    - .scr
+    - .pif
+    - .com
+    - .vbs
+    - .js
+    - .wsf
+    - .msi

@@ -1,0 +1,122 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Settings</h1>
+        </div>
+
+        <p class="text-secondary fs-14 mb-24">Configure how long MSNGR keeps different types of data. Shorter retention saves storage space; longer retention helps with auditing and troubleshooting. All values are in days. Set to 0 to keep data indefinitely.</p>
+
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+        <!-- Storage usage -->
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mb-0">Current Storage Usage</h2>
+            </div>
+            {{if .Data.Storage}}
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">{{(index .Data "Storage").MessageCount}}</div>
+                    <div class="stat-label">Messages</div>
+                    <div class="stat-hint">Metadata records</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{(index .Data "Storage").BodyCount}}</div>
+                    <div class="stat-label">Message Bodies</div>
+                    <div class="stat-hint">Stored email content</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{(index .Data "Storage").AttachmentCount}}</div>
+                    <div class="stat-label">Attachments</div>
+                    <div class="stat-hint">Stored files</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{(index .Data "Storage").AuditCount}}</div>
+                    <div class="stat-label">Audit Events</div>
+                    <div class="stat-hint">Action records</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{(index .Data "Storage").QueueCount}}</div>
+                    <div class="stat-label">Queue Items</div>
+                    <div class="stat-hint">Send requests</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{bytesToMB (index .Data "Storage").DBSizeBytes}} MB</div>
+                    <div class="stat-label">Database</div>
+                    <div class="stat-hint">SQLite file size</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{bytesToMB (index .Data "Storage").StorageDiskBytes}} MB</div>
+                    <div class="stat-label">Message Storage</div>
+                    <div class="stat-hint">Archive files on disk</div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+
+        <!-- Retention periods -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mb-0">Retention Periods</h2>
+            </div>
+            <form method="POST" action="/settings">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+                <div class="form-group">
+                    <label>Message Metadata <span class="label-hint">(days)</span></label>
+                    <div class="form-hint">Headers like sender, recipient, subject, and dates</div>
+                    <input type="number" name="retention_metadata_days" value="{{.Data.RetentionMetadataDays}}" min="0" placeholder="90">
+                </div>
+
+                <div class="form-group">
+                    <label>Message Bodies <span class="label-hint">(days)</span></label>
+                    <div class="form-hint">The actual content of emails</div>
+                    <input type="number" name="retention_body_days" value="{{.Data.RetentionBodyDays}}" min="0" placeholder="30">
+                </div>
+
+                <div class="form-group">
+                    <label>Attachments <span class="label-hint">(days)</span></label>
+                    <div class="form-hint">Files attached to emails</div>
+                    <input type="number" name="retention_attachment_days" value="{{.Data.RetentionAttachmentDays}}" min="0" placeholder="14">
+                </div>
+
+                <div class="form-group">
+                    <label>Audit Events <span class="label-hint">(days)</span></label>
+                    <div class="form-hint">The audit trail of actions and decisions</div>
+                    <input type="number" name="retention_audit_days" value="{{.Data.RetentionAuditDays}}" min="0" placeholder="365">
+                </div>
+
+                <div class="form-group">
+                    <label>Queue Items <span class="label-hint">(days)</span></label>
+                    <div class="form-hint">Outbound send requests and their delivery status</div>
+                    <input type="number" name="retention_queue_days" value="{{.Data.RetentionQueueDays}}" min="0" placeholder="30">
+                </div>
+
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </form>
+        </div>
+
+        <!-- Session Timeouts -->
+        <div class="card mt-24">
+            <div class="card-header">
+                <h2 class="mb-0">Session Timeouts</h2>
+            </div>
+            <form method="POST" action="/settings">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+                <div class="form-group">
+                    <label>MCP Session Timeout <span class="label-hint">(minutes)</span></label>
+                    <div class="form-hint">How long an agent's MCP session stays valid before re-authentication is required</div>
+                    <input type="number" name="mcp_session_timeout_minutes" value="{{.Data.MCPSessionTimeoutMinutes}}" min="1" max="43200" placeholder="60">
+                </div>
+
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </form>
+        </div>
+    </div>
+</div>
+{{end}}

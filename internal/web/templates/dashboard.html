@@ -1,0 +1,52 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Dashboard</h1>
+        </div>
+
+        {{if .Data.ShowWelcome}}
+        <div class="card mb-24 card-accent">
+            <h2 class="mt-0">Welcome {{.Operator.Name}}!</h2>
+            <p class="text-secondary">MSNGR is your policy-enforced mail gateway. It controls how agents send and receive email, ensuring every action is checked against your rules.</p>
+            <p class="text-secondary mb-0">Configure mail servers and accounts first, then set up agents and policy rules to get started.</p>
+        </div>
+        {{end}}
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").Accounts}}{{else}}0{{end}}</div>
+                <div class="stat-label">Mail Accounts</div>
+                <div class="stat-hint">Email addresses MSNGR manages</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").Agents}}{{else}}0{{end}}</div>
+                <div class="stat-label">Agents</div>
+                <div class="stat-hint">Programs that access mail through MSNGR</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").Rules}}{{else}}0{{end}}</div>
+                <div class="stat-label">Active Rules</div>
+                <div class="stat-hint">Policy rules currently enforcing decisions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").QueueDepth}}{{else}}0{{end}}</div>
+                <div class="stat-label">Queue Depth</div>
+                <div class="stat-hint">Messages waiting to be sent</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").PendingHolds}}{{else}}0{{end}}</div>
+                <div class="stat-label">Pending Holds</div>
+                <div class="stat-hint">Messages paused for your review</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").AuditEvents}}{{else}}0{{end}}</div>
+                <div class="stat-label">Audit Events</div>
+                <div class="stat-hint">Recorded actions and decisions</div>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,142 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Agents</h1>
+        </div>
+        <p class="text-secondary fs-14">Agents are programs (like AI assistants or automation bots) that interact with email through MSNGR. Each agent authenticates with an API token via the MCP interface.</p>
+
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+        {{if .Data.NewToken}}
+        <div class="alert alert-success alert-lg">
+            <strong>Copy this API token now — it will not be shown again:</strong>
+            <div class="token-display">{{.Data.NewToken}}</div>
+        </div>
+        {{end}}
+
+        <div class="card">
+            {{if .Data.Agents}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Agent Email</th>
+                        <th>Token Status</th>
+                        <th>Last Used</th>
+                        <th>Enabled</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Agents}}
+                    <tr>
+                        <td class="fs-13 text-muted">{{.ID}}</td>
+                        <td>{{.DisplayName}}</td>
+                        <td class="fs-14"><code>{{.AgentEmail}}</code></td>
+                        <td>
+                            {{$tok := index $.Data.TokenMap .ID}}
+                            {{if $tok}}<span class="badge badge-active">active</span>
+                            {{else}}<span class="badge badge-pending">none</span>
+                            {{end}}
+                        </td>
+                        <td class="fs-13 text-muted">
+                            {{$tok := index $.Data.TokenMap .ID}}
+                            {{if $tok}}{{if $tok.LastUsedAt}}{{$tok.LastUsedAt}}{{else}}&mdash;{{end}}
+                            {{else}}&mdash;{{end}}
+                        </td>
+                        <td>
+                            {{if .Enabled}}<span class="badge badge-active">enabled</span>
+                            {{else}}<span class="badge badge-inactive">disabled</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            <div class="flex-gap-8">
+                                <form method="POST" action="/agents">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="renew_token">
+                                    <input type="hidden" name="agent_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm" onclick="return confirm('This will revoke the current token and generate a new one. Continue?');">Renew</button>
+                                </form>
+                                {{if .Enabled}}
+                                <form method="POST" action="/agents">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="disable_agent">
+                                    <input type="hidden" name="agent_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm btn-danger">Disable</button>
+                                </form>
+                                {{else}}
+                                <form method="POST" action="/agents">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="enable_agent">
+                                    <input type="hidden" name="agent_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm btn-primary">Enable</button>
+                                </form>
+                                {{end}}
+                            </div>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">
+                <p class="text-muted">No agents registered yet.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <div class="card mt-24">
+            <div class="card-header">
+                <h2 class="mb-0">Add Agent</h2>
+            </div>
+            <form method="POST" action="/agents">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="action" value="create_agent">
+
+                <div class="form-group">
+                    <label>Name <span class="req">*</span></label>
+                    <input type="text" name="display_name" id="display_name" placeholder="e.g. Claude Assistant" required>
+                    <span class="label-hint" id="name_hint">This name will be used as the sender name when the agent sends emails</span>
+                </div>
+
+                <div class="form-group">
+                    <label>Agent Email <span class="req">*</span></label>
+                    <select name="agent_email" required>
+                        <option value="">-- Select an email account --</option>
+                        {{range .Data.Accounts}}
+                        <option value="{{.EmailAddress}}">{{.EmailAddress}}</option>
+                        {{end}}
+                    </select>
+                    <span class="label-hint">The email account this agent authenticates with</span>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Create Agent</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script nonce="{{.CSPNonce}}">
+(function() {
+    var agents = [{{range .Data.Agents}}"{{.DisplayName}}",{{end}}];
+    var input = document.getElementById('display_name');
+    var hint = document.getElementById('name_hint');
+    if (!input || !hint) return;
+    input.addEventListener('input', function() {
+        var val = input.value.trim();
+        if (val && agents.indexOf(val) !== -1) {
+            hint.textContent = 'This name is already taken';
+            hint.style.color = '#dc2626';
+        } else {
+            hint.textContent = 'This name will be used as the sender name when the agent sends emails';
+            hint.style.color = '';
+        }
+    });
+})();
+</script>
+{{end}}

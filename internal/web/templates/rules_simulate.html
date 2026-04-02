@@ -1,0 +1,131 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Simulate Policy Decision</h1>
+        </div>
+
+        <div class="help-block mb-24">
+            <p class="mb-0">Test how a hypothetical action would be evaluated against all policy layers — Config safety limits, your Rules, and Runtime state. No actual action is performed. This is useful for verifying that your rules work as expected before an agent encounters them.</p>
+        </div>
+
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mb-0">Action to Simulate</h2>
+            </div>
+            <form method="POST" action="/rules/simulate">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+                <div class="flex-gap-12 mb-16">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Agent Name <span class="req">*</span></label>
+                        <input type="text" name="agent_name" placeholder="Claude Assistant" value="{{if .Data}}{{index .Data "SimAgentName"}}{{end}}">
+                        <div class="form-hint">The agent's display name</div>
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>Account</label>
+                        <select name="account_id">
+                            <option value="0">None</option>
+                            {{if .Data}}{{range (index .Data "Accounts")}}
+                            <option value="{{.ID}}"{{if $.Data}}{{if eq (printf "%d" .ID) (index $.Data "SimAccountID")}} selected{{end}}{{end}}>{{.EmailAddress}}</option>
+                            {{end}}{{end}}
+                        </select>
+                        <div class="form-hint">The mail account the action targets</div>
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>Action Type <span class="req">*</span></label>
+                        <select name="action_type">
+                            <option value="send">Send</option>
+                            <option value="read">Read</option>
+                            <option value="delete">Delete</option>
+                            <option value="mark">Mark</option>
+                            <option value="download_attachment">Download Attachment</option>
+                        </select>
+                        <div class="form-hint">What the agent wants to do</div>
+                    </div>
+                </div>
+
+                <div class="flex-gap-12 mb-16">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Recipient</label>
+                        <input type="text" name="recipient" placeholder="user@example.com" value="{{if .Data}}{{index .Data "SimRecipient"}}{{end}}">
+                        <div class="form-hint">For send actions — the target email address</div>
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>Subject</label>
+                        <input type="text" name="subject" placeholder="Quarterly report" value="{{if .Data}}{{index .Data "SimSubject"}}{{end}}">
+                    </div>
+                </div>
+
+                <div class="flex-gap-12 mb-16">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Body Text</label>
+                        <input type="text" name="body_text" placeholder="confidential financial data" value="{{if .Data}}{{index .Data "SimBody"}}{{end}}">
+                        <div class="form-hint">Keywords to test against keyword rules</div>
+                    </div>
+                    <div class="form-group mb-0" style="width:140px">
+                        <label>Size (bytes)</label>
+                        <input type="number" name="message_size" value="{{if .Data}}{{index .Data "SimSize"}}{{else}}0{{end}}">
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>Attachment Filename</label>
+                        <input type="text" name="attachment_filename" placeholder="report.pdf" value="{{if .Data}}{{index .Data "SimAttachment"}}{{end}}">
+                        <div class="form-hint">To test extension and attachment rules</div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Run Simulation</button>
+            </form>
+        </div>
+
+        {{if .Data}}{{if index .Data "SimResult"}}
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mb-0">Result</h2>
+            </div>
+            {{with (index .Data "SimResult")}}
+            <div class="mb-16">
+                <strong>Decision:</strong>
+                {{if eq .Outcome "allow"}}<span class="badge badge-active">ALLOW</span>
+                {{else if eq .Outcome "deny"}}<span class="badge badge-inactive">DENY</span>
+                {{else}}<span class="badge badge-pending">HOLD</span>{{end}}
+            </div>
+
+            <div class="mb-16">
+                <strong>Explanation:</strong> {{if .Explanation}}{{.Explanation}}{{else}}<span class="text-muted">No explanation provided</span>{{end}}
+            </div>
+
+            {{if .MatchedRules}}
+            <div>
+                <strong class="mb-8">Matched Rules:</strong>
+                <table class="mt-8">
+                    <thead>
+                        <tr><th>Layer</th><th>Rule</th><th>Decision</th><th>Explanation</th></tr>
+                    </thead>
+                    <tbody>
+                    {{range .MatchedRules}}
+                    <tr>
+                        <td><span class="badge badge-info">{{.Layer}}</span></td>
+                        <td>{{.Name}}</td>
+                        <td>
+                            {{if eq .Action "allow"}}<span class="badge badge-active">allow</span>
+                            {{else if eq .Action "deny"}}<span class="badge badge-inactive">deny</span>
+                            {{else}}<span class="badge badge-pending">hold</span>{{end}}
+                        </td>
+                        <td class="text-secondary">{{.Explanation}}</td>
+                    </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <p class="text-muted">No rules matched. Default decision is deny (safe by default).</p>
+            {{end}}
+            {{end}}
+        </div>
+        {{end}}{{end}}
+    </div>
+</div>
+{{end}}

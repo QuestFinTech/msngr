@@ -1,0 +1,49 @@
+{{define "nav"}}
+{{if .Operator}}
+<nav class="nav">
+    <div class="nav-inner">
+        <div class="nav-left">
+            <a href="/dashboard" class="nav-brand">MSNGR <span class="op-50-fw-400">Config</span></a>
+            <div class="nav-links">
+                <a href="/dashboard"{{if eq .CurrentPage "dashboard"}} class="active"{{end}}>Dashboard</a>
+                <div class="nav-dropdown-wrap">
+                    <button class="nav-menu-btn{{if or (eq .CurrentPage "servers") (eq .CurrentPage "accounts")}} active{{end}}">Email <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <div class="nav-dropdown nav-dropdown-menu">
+                        <a href="/servers"{{if eq .CurrentPage "servers"}} class="active"{{end}}>Servers</a>
+                        <a href="/accounts"{{if eq .CurrentPage "accounts"}} class="active"{{end}}>Accounts</a>
+                    </div>
+                </div>
+                <a href="/agents"{{if eq .CurrentPage "agents"}} class="active"{{end}}>Agents</a>
+                <div class="nav-dropdown-wrap">
+                    <button class="nav-menu-btn{{if or (eq .CurrentPage "rules") (eq .CurrentPage "rules_simulate")}} active{{end}}">Rules <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <div class="nav-dropdown nav-dropdown-menu">
+                        <a href="/rules"{{if eq .CurrentPage "rules"}} class="active"{{end}}>Manage</a>
+                        <a href="/rules/simulate"{{if eq .CurrentPage "rules_simulate"}} class="active"{{end}}>Simulate</a>
+                    </div>
+                </div>
+                <div class="nav-dropdown-wrap">
+                    <button class="nav-menu-btn{{if or (eq .CurrentPage "queue") (eq .CurrentPage "holds") (eq .CurrentPage "audit")}} active{{end}}">Operations <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    <div class="nav-dropdown nav-dropdown-menu">
+                        <a href="/queue"{{if eq .CurrentPage "queue"}} class="active"{{end}}>Queue</a>
+                        <a href="/holds"{{if eq .CurrentPage "holds"}} class="active"{{end}}>Holds</a>
+                        <a href="/audit"{{if eq .CurrentPage "audit"}} class="active"{{end}}>Audit</a>
+                    </div>
+                </div>
+                <a href="/settings"{{if eq .CurrentPage "settings"}} class="active"{{end}}>Settings</a>
+            </div>
+        </div>
+        <div class="nav-right">
+            <div class="nav-user">
+                <button type="button" class="nav-user-btn">
+                    {{.Operator.Name}}
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="nav-dropdown">
+                    <a href="/logout">Sign Out</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</nav>
+{{end}}
+{{end}}

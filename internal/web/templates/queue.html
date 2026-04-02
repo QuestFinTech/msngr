@@ -1,0 +1,96 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Outbound Queue</h1>
+        </div>
+
+        <p class="text-secondary fs-14">The outbound queue shows all messages that agents have requested to send. Messages go through a lifecycle before delivery:</p>
+        <p class="text-secondary fs-14"><strong>Draft</strong> → <strong>Queued</strong> (passed policy check) → <strong>Sending</strong> → <strong>Sent</strong> or <strong>Failed</strong></p>
+        <p class="text-secondary fs-14">If a policy rule triggers a hold, the message goes to the Holds page for review. You can cancel queued messages before they're sent.</p>
+
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+        <div class="card mb-16">
+            <form method="GET" action="/queue">
+                <div class="flex-gap-12">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Status</label>
+                        <select name="status">
+                            <option value=""{{if eq .Data.StatusFilter ""}} selected{{end}}>All</option>
+                            <option value="queued"{{if eq .Data.StatusFilter "queued"}} selected{{end}}>Queued — Waiting to be sent</option>
+                            <option value="sending"{{if eq .Data.StatusFilter "sending"}} selected{{end}}>Sending — Currently being delivered</option>
+                            <option value="sent"{{if eq .Data.StatusFilter "sent"}} selected{{end}}>Sent — Successfully delivered</option>
+                            <option value="failed"{{if eq .Data.StatusFilter "failed"}} selected{{end}}>Failed — Delivery failed</option>
+                            <option value="held"{{if eq .Data.StatusFilter "held"}} selected{{end}}>Held — Paused by a policy rule</option>
+                            <option value="cancelled"{{if eq .Data.StatusFilter "cancelled"}} selected{{end}}>Cancelled — Cancelled before sending</option>
+                        </select>
+                    </div>
+                    <div class="form-group mb-0">
+                        <label>&nbsp;</label>
+                        <button type="submit" class="btn">Filter</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            {{if .Data.Items}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Subject</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Sent</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Items}}
+                    <tr>
+                        <td class="fs-13 text-secondary">{{.ID}}</td>
+                        <td class="fs-13">{{.FromAddr}}</td>
+                        <td class="fs-13">{{.ToAddrs}}</td>
+                        <td>{{.Subject}}</td>
+                        <td>
+                            {{if eq .Status "sent"}}<span class="badge badge-active">sent</span>
+                            {{else if eq .Status "failed"}}<span class="badge badge-inactive">failed</span>
+                            {{else if eq .Status "held"}}<span class="badge badge-pending">held</span>
+                            {{else if eq .Status "queued"}}<span class="badge badge-info">queued</span>
+                            {{else if eq .Status "sending"}}<span class="badge badge-info">sending</span>
+                            {{else if eq .Status "cancelled"}}<span class="badge badge-inactive">cancelled</span>
+                            {{else}}<span class="badge">{{.Status}}</span>
+                            {{end}}
+                        </td>
+                        <td class="fs-13 text-secondary">{{.CreatedAt}}</td>
+                        <td class="fs-13 text-secondary">{{if .SentAt}}{{.SentAt}}{{else}}&mdash;{{end}}</td>
+                        <td>
+                            {{if eq .Status "queued"}}
+                            <form method="POST" action="/queue" class="inline-form">
+                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                <input type="hidden" name="action" value="cancel">
+                                <input type="hidden" name="id" value="{{.ID}}">
+                                <button type="submit" class="btn btn-danger btn-sm">Cancel</button>
+                            </form>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">
+                <p class="text-muted">No queue items found.</p>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,219 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Policy Rules</h1>
+        </div>
+
+        <div class="help-block mb-24">
+            <p>Rules control what agents can and cannot do. Every mail action (send, read, delete) is checked against these rules before it executes. MSNGR evaluates three policy layers in order:</p>
+            <p><strong>Config</strong> (config.yaml) — Safety limits like max message size, max recipients, and forbidden file types. These are always enforced first and cannot be changed from the web UI.</p>
+            <p><strong>Rules</strong> (this page) — The rules you create here. This is where most policy decisions happen.</p>
+            <p><strong>Runtime</strong> — Temporary states like rate limits and one-time approvals.</p>
+            <p><strong>How decisions work:</strong> Rules are checked in priority order (lowest number first). Each rule results in <strong>Allow</strong> (proceed), <strong>Deny</strong> (block with explanation), or <strong>Hold</strong> (pause for operator review). A deny stops evaluation immediately. The default outcome when no rule matches is deny (safe by default).</p>
+            <p class="mb-0"><strong>Match criteria</strong> is a JSON object that defines when a rule applies. Common fields: <code>agent_id</code>, <code>domain</code>, <code>action_type</code> (send/read/delete), <code>keywords_present</code>, <code>max_recipients</code>, <code>attachment_present</code>.</p>
+        </div>
+
+        <!-- Config layer: read-only values from config.yaml -->
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mb-0">Config — Safety Limits</h2>
+            </div>
+            <p class="text-secondary fs-14 mb-12">These values are set in <strong>config.yaml</strong> and cannot be changed from the web UI.</p>
+            <table>
+                <tr><th>Setting</th><th>Value</th></tr>
+                <tr><td>Max message size</td><td>{{(index .Data "HardPolicy").MaxMessageSizeMB}} MB</td></tr>
+                <tr><td>Max recipients (To + Cc)</td><td>{{(index .Data "HardPolicy").MaxRecipients}}</td></tr>
+                <tr><td>Forbidden extensions</td><td>{{range (index .Data "HardPolicy").ForbiddenExtensions}}{{.}} {{end}}</td></tr>
+                <tr><td>Denied domains</td><td>{{if (index .Data "HardPolicy").DenyDomains}}{{range (index .Data "HardPolicy").DenyDomains}}{{.}} {{end}}{{else}}<span class="text-muted">None</span>{{end}}</td></tr>
+            </table>
+        </div>
+
+        <!-- Rules list -->
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mb-0">Rules</h2>
+            </div>
+            {{if .Data.Rules}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Priority</th>
+                        <th>Name</th>
+                        <th>Action</th>
+                        <th>Enabled</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Rules}}
+                    <tr>
+                        <td>{{fmtInt .Priority}}</td>
+                        <td>{{.Name}}</td>
+                        <td>
+                            {{if eq .Action "allow"}}<span class="badge badge-active">allow</span>
+                            {{else if eq .Action "deny"}}<span class="badge badge-inactive">deny</span>
+                            {{else if eq .Action "hold"}}<span class="badge badge-pending">hold</span>
+                            {{else}}<span class="badge">{{.Action}}</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            {{if .Enabled}}<span class="badge badge-active">enabled</span>
+                            {{else}}<span class="badge badge-inactive">disabled</span>
+                            {{end}}
+                        </td>
+                        <td>
+                            <div class="flex-gap-8">
+                                {{if .Enabled}}
+                                <form method="POST" action="/rules" class="inline-form">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="disable_rule">
+                                    <input type="hidden" name="rule_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm">Disable</button>
+                                </form>
+                                {{else}}
+                                <form method="POST" action="/rules" class="inline-form">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="enable_rule">
+                                    <input type="hidden" name="rule_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm btn-primary">Enable</button>
+                                </form>
+                                {{end}}
+                                <a href="/rules?edit={{.ID}}#rule-form" class="btn btn-sm">Edit</a>
+                                <form method="POST" action="/rules" class="inline-form" onsubmit="return confirm('Delete rule &quot;{{.Name}}&quot;?');">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="delete_rule">
+                                    <input type="hidden" name="rule_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">
+                <p class="text-muted">No policy rules configured yet.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <div class="row-flex mb-24">
+        <!-- Add / Edit rule form -->
+        <div class="card flex-3" id="rule-form">
+            <div class="card-header">
+                <h2 class="mb-0">{{if .Data.EditRule}}Edit: {{.Data.EditRule.Name}}{{else}}Add Rule{{end}}</h2>
+            </div>
+            <form method="POST" action="/rules">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="layer" value="C">
+                {{if .Data.EditRule}}
+                <input type="hidden" name="action" value="edit_rule">
+                <input type="hidden" name="rule_id" value="{{.Data.EditRule.ID}}">
+                {{end}}
+
+                <div class="flex-gap-12 mb-16">
+                    <div class="form-group mb-0 flex-1">
+                        <label>Name <span class="req">*</span></label>
+                        <input type="text" name="name" value="{{if .Data.EditRule}}{{.Data.EditRule.Name}}{{end}}" placeholder="e.g. Block external domains" required>
+                    </div>
+                    <div class="form-group mb-0 w-120">
+                        <label>Priority <span class="req">*</span></label>
+                        <input type="number" name="priority" value="{{if .Data.EditRule}}{{fmtInt .Data.EditRule.Priority}}{{else}}100{{end}}" required>
+                        <div class="form-hint">Lower = first</div>
+                    </div>
+                    <div class="form-group mb-0 flex-1">
+                        <label>Action <span class="req">*</span></label>
+                        <select name="rule_action" required>
+                            <option value="allow" {{if .Data.EditRule}}{{if eq .Data.EditRule.Action "allow"}}selected{{end}}{{end}}>Allow</option>
+                            <option value="deny" {{if .Data.EditRule}}{{if eq .Data.EditRule.Action "deny"}}selected{{end}}{{end}}>Deny</option>
+                            <option value="hold" {{if .Data.EditRule}}{{if eq .Data.EditRule.Action "hold"}}selected{{end}}{{end}}>Hold</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Match Criteria <span class="req">*</span> <span class="label-hint">(JSON)</span></label>
+                    <textarea name="match_criteria" rows="3" placeholder='{"action_type": "send", "domain": "/(gmail\\.com|yahoo\\.com)/"}' required>{{if .Data.EditRule}}{{.Data.EditRule.MatchCriteria}}{{end}}</textarea>
+                    <details class="help-ref">
+                        <summary>Field reference &amp; examples</summary>
+                        <div class="ref-content">
+                            <p>A JSON object where all specified fields must match (AND logic). Omitted fields match everything.</p>
+                            <table>
+                                <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+                                <tbody>
+                                    <tr><td><code>action_type</code></td><td>string</td><td>Action being performed: <code>"send"</code>, <code>"read"</code>, <code>"delete"</code></td></tr>
+                                    <tr><td><code>agent_id</code></td><td>string</td><td>Agent name (display name). Exact match.</td></tr>
+                                    <tr><td><code>account_id</code></td><td>number</td><td>Numeric account ID</td></tr>
+                                    <tr><td><code>domain</code></td><td>string</td><td>Recipient domain. Use <code>/regex/</code> for patterns.</td></tr>
+                                    <tr><td><code>sender</code></td><td>string</td><td>Sender address. Use <code>/regex/</code> for patterns.</td></tr>
+                                    <tr><td><code>recipient</code></td><td>string</td><td>Any recipient (To or Cc). Use <code>/regex/</code> for patterns.</td></tr>
+                                    <tr><td><code>keywords_present</code></td><td>array</td><td>All keywords must appear in subject + body (case-insensitive)</td></tr>
+                                    <tr><td><code>keywords_absent</code></td><td>array</td><td>None of these keywords may appear in subject + body</td></tr>
+                                    <tr><td><code>attachment_present</code></td><td>boolean</td><td><code>true</code> = has attachments, <code>false</code> = no attachments</td></tr>
+                                    <tr><td><code>attachment_types</code></td><td>array</td><td>MIME types or extensions: <code>[".pdf", "image/png"]</code></td></tr>
+                                    <tr><td><code>max_size</code></td><td>number</td><td>Deny if message size exceeds this (bytes)</td></tr>
+                                    <tr><td><code>max_recipients</code></td><td>number</td><td>Deny if total recipients (To+Cc) exceeds this</td></tr>
+                                </tbody>
+                            </table>
+                            <p class="mt-8"><strong>String matching:</strong> Plain strings are case-insensitive exact matches. Wrap in <code>/slashes/</code> for regex: <code>"domain": "/(gmail|yahoo)\\.com/"</code></p>
+                            <p class="mb-0"><strong>Examples:</strong></p>
+                            <p class="mb-4"><code>{"action_type": "send", "domain": "sys.lu"}</code> — match sends to sys.lu</p>
+                            <p class="mb-4"><code>{"keywords_present": ["CONFIDENTIAL"]}</code> — match any message containing "CONFIDENTIAL"</p>
+                            <p class="mb-4"><code>{"action_type": "send", "max_recipients": 5}</code> — match sends with more than 5 recipients</p>
+                            <p class="mb-0"><code>{"agent_id": "Claude", "attachment_present": true}</code> — match when Claude sends attachments</p>
+                        </div>
+                    </details>
+                </div>
+
+                <div class="form-group">
+                    <label>Explanation</label>
+                    <input type="text" name="explanation" value="{{if .Data.EditRule}}{{.Data.EditRule.Explanation}}{{end}}" placeholder="Human-readable reason shown when this rule triggers">
+                </div>
+
+                <div class="flex-gap-8">
+                    {{if .Data.EditRule}}
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                    <a href="/rules" class="btn">Cancel</a>
+                    {{else}}
+                    <button type="submit" class="btn btn-primary">Create Rule</button>
+                    {{end}}
+                </div>
+            </form>
+        </div>
+
+        <!-- Import / Export -->
+        <div class="card flex-1">
+            <div class="card-header">
+                <h2 class="mb-0">Import / Export</h2>
+            </div>
+            <form method="POST" action="/rules/import" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+                <div class="form-group">
+                    <label>JSON Rule File</label>
+                    <input type="file" name="rules_file" accept=".json" required>
+                </div>
+
+                <div class="form-group inline-labels">
+                    <label class="fs-14">Duplicates:</label>
+                    <label class="fs-14"><input type="radio" name="mode" value="skip" checked> Skip</label>
+                    <label class="fs-14"><input type="radio" name="mode" value="overwrite"> Overwrite</label>
+                </div>
+
+                <div class="flex-gap-8">
+                    <button type="submit" class="btn btn-primary">Import</button>
+                    <a href="/rules/export" class="btn">Export</a>
+                </div>
+            </form>
+        </div>
+        </div>
+    </div>
+</div>
+{{end}}

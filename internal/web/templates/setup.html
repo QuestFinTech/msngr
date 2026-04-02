@@ -1,0 +1,63 @@
+{{template "base" .}}
+{{define "content"}}
+<div class="main-content center-page">
+    <div class="center-card card">
+        <div class="ta-center-mb-24">
+            <h1>Create Master Admin</h1>
+            <p class="text-secondary mb-0">Set up the first administrator account for MSNGR.</p>
+        </div>
+
+        {{if .Error}}
+        <div class="alert alert-error">{{.Error}}</div>
+        {{end}}
+
+        <form method="POST" action="/setup" id="setup-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            <div class="form-group">
+                <label for="name">Name <span class="req">*</span></label>
+                <input type="text" id="name" name="name" required autofocus placeholder="Jane Smith" {{if .Data}}value="{{index .Data "Name"}}"{{end}}>
+            </div>
+
+            <div class="form-group">
+                <label for="email">Email <span class="req">*</span></label>
+                <input type="email" id="email" name="email" required placeholder="admin@example.com" {{if .Data}}value="{{index .Data "Email"}}"{{end}}>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password <span class="req">*</span> <span class="label-hint">(min 12 chars, upper+lower+digit+special)</span></label>
+                <input type="password" id="password" name="password" required>
+            </div>
+
+            <div class="form-group">
+                <label for="confirm_password">Confirm Password <span class="req">*</span></label>
+                <input type="password" id="confirm_password" name="confirm_password" required>
+            </div>
+
+            <div id="pw-error" class="alert alert-error d-none"></div>
+
+            <button type="submit" class="btn btn-primary btn-block">Create Admin Account</button>
+        </form>
+    </div>
+</div>
+
+<script nonce="{{.Nonce}}">
+(function() {
+    var form = document.getElementById('setup-form');
+    if (form) {
+        form.addEventListener('submit', function(e) {
+            var pwErr = document.getElementById('pw-error');
+            pwErr.classList.add('d-none');
+            var pw = document.getElementById('password').value;
+            var cpw = document.getElementById('confirm_password').value;
+            if (pw && cpw && pw !== cpw) {
+                pwErr.textContent = 'Passwords do not match.';
+                pwErr.classList.remove('d-none');
+                document.getElementById('confirm_password').focus();
+                e.preventDefault();
+            }
+        });
+    }
+})();
+</script>
+{{end}}

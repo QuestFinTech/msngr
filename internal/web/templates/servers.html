@@ -1,0 +1,133 @@
+{{template "base" .}}
+{{define "content"}}
+{{template "nav" .}}
+<div class="main-content">
+    <div class="container">
+        <div class="page-header">
+            <h1>Mail Servers</h1>
+        </div>
+        <p class="text-secondary fs-14">Mail servers define the connection settings (IMAP for receiving, SMTP for sending) that your email accounts use. Set up your servers first, then create accounts that use them. Multiple accounts can share the same server.</p>
+
+        {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+        {{if .Success}}<div class="alert alert-success">{{.Success}}</div>{{end}}
+
+        <div class="card">
+            {{if .Data.Servers}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>IMAP</th>
+                        <th>IMAP TLS</th>
+                        <th>SMTP</th>
+                        <th>SMTP TLS</th>
+                        <th>Accounts</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Data.Servers}}
+                    <tr>
+                        <td>{{.Name}}</td>
+                        <td class="fs-13 text-secondary">{{.IMAPHost}}:{{fmtInt .IMAPPort}}</td>
+                        <td>
+                            {{if .IMAPTLS}}<span class="badge badge-active">TLS</span>
+                            {{else}}<span class="badge badge-inactive">off</span>
+                            {{end}}
+                        </td>
+                        <td class="fs-13 text-secondary">{{.SMTPHost}}:{{fmtInt .SMTPPort}}</td>
+                        <td>
+                            {{if .SMTPTLS}}<span class="badge badge-active">TLS</span>
+                            {{else}}<span class="badge badge-inactive">off</span>
+                            {{end}}
+                        </td>
+                        <td class="fs-13">{{index $.Data.AccountCounts .ID}}</td>
+                        <td>
+                            <div class="flex-gap-8">
+                                <form method="POST" action="/servers">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="test">
+                                    <input type="hidden" name="server_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm">Test</button>
+                                </form>
+                                <a href="/servers?edit={{.ID}}#server-form" class="btn btn-sm">Edit</a>
+                                <form method="POST" action="/servers" onsubmit="return confirm('Delete server {{.Name}}?');">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="delete">
+                                    <input type="hidden" name="server_id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">
+                <p class="text-muted">No mail servers configured yet.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <div class="card mt-24" id="server-form">
+            <div class="card-header">
+                <h2 class="mb-0">{{if .Data.EditServer}}Edit: {{.Data.EditServer.Name}}{{else}}Add Mail Server{{end}}</h2>
+            </div>
+            <form method="POST" action="/servers">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                {{if .Data.EditServer}}
+                <input type="hidden" name="action" value="edit">
+                <input type="hidden" name="server_id" value="{{.Data.EditServer.ID}}">
+                {{end}}
+
+                <div class="form-group">
+                    <label>Name <span class="req">*</span></label>
+                    <input type="text" name="name" value="{{if .Data.EditServer}}{{.Data.EditServer.Name}}{{end}}" placeholder="e.g. Corporate Mail" required>
+                </div>
+
+                <div class="flex-gap-12">
+                    <div class="form-group flex-1">
+                        <label>IMAP Host <span class="req">*</span></label>
+                        <input type="text" name="imap_host" value="{{if .Data.EditServer}}{{.Data.EditServer.IMAPHost}}{{end}}" placeholder="imap.example.com" required>
+                        <div class="form-hint">Used for retrieving incoming mail</div>
+                    </div>
+                    <div class="form-group" style="width:100px;">
+                        <label>Port</label>
+                        <input type="number" name="imap_port" placeholder="993" value="{{if .Data.EditServer}}{{fmtInt .Data.EditServer.IMAPPort}}{{else}}993{{end}}">
+                    </div>
+                    <div class="form-group" style="width:80px; padding-top:28px;">
+                        <label><input type="checkbox" name="imap_tls" value="1" {{if .Data.EditServer}}{{if .Data.EditServer.IMAPTLS}}checked{{end}}{{else}}checked{{end}}> TLS</label>
+                        <div class="form-hint">Encrypts the connection (recommended)</div>
+                    </div>
+                </div>
+
+                <div class="flex-gap-12">
+                    <div class="form-group flex-1">
+                        <label>SMTP Host <span class="req">*</span></label>
+                        <input type="text" name="smtp_host" value="{{if .Data.EditServer}}{{.Data.EditServer.SMTPHost}}{{end}}" placeholder="smtp.example.com" required>
+                        <div class="form-hint">Used for sending outgoing mail</div>
+                    </div>
+                    <div class="form-group" style="width:100px;">
+                        <label>Port</label>
+                        <input type="number" name="smtp_port" placeholder="587" value="{{if .Data.EditServer}}{{fmtInt .Data.EditServer.SMTPPort}}{{else}}587{{end}}">
+                    </div>
+                    <div class="form-group" style="width:80px; padding-top:28px;">
+                        <label><input type="checkbox" name="smtp_tls" value="1" {{if .Data.EditServer}}{{if .Data.EditServer.SMTPTLS}}checked{{end}}{{else}}checked{{end}}> TLS</label>
+                        <div class="form-hint">Encrypts the connection (recommended)</div>
+                    </div>
+                </div>
+
+                <div class="flex-gap-8">
+                    {{if .Data.EditServer}}
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                    <a href="/servers" class="btn">Cancel</a>
+                    {{else}}
+                    <button type="submit" class="btn btn-primary">Create Server</button>
+                    {{end}}
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{{end}}
