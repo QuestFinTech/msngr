@@ -40,7 +40,7 @@ dist/
 .env.secrets
 
 # Compiled binary at repo root
-msngr
+/msngr
 
 # Playwright MCP logs
 .playwright-mcp/
