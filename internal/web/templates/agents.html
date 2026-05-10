@@ -80,6 +80,48 @@
                             </div>
                         </td>
                     </tr>
+                    {{$perms := index $.Data.PermissionsByAgent .ID}}
+                    <tr class="permissions-row">
+                        <td colspan="7" style="background: #f8fafc; border-top: none;">
+                            <div class="fs-13 text-secondary mb-8"><strong>Account access</strong></div>
+                            <div class="flex-gap-8" style="flex-wrap: wrap; align-items: center; margin-bottom: 8px;">
+                                {{if $perms}}
+                                {{range $perms}}
+                                <form method="POST" action="/agents" style="display: inline-block;">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <input type="hidden" name="action" value="revoke_permission">
+                                    <input type="hidden" name="agent_id" value="{{.AgentID}}">
+                                    <input type="hidden" name="account_id" value="{{.AccountID}}">
+                                    <input type="hidden" name="capability" value="{{.Capability}}">
+                                    <button type="submit" class="btn btn-sm" title="Revoke this permission" onclick="return confirm('Revoke {{.Capability}} on {{index $.Data.AccountEmailByID .AccountID}}?');">
+                                        <code>{{index $.Data.AccountEmailByID .AccountID}}</code> · {{.Capability}} <span aria-hidden="true">&times;</span>
+                                    </button>
+                                </form>
+                                {{end}}
+                                {{else}}
+                                <span class="text-muted fs-13">No account access yet.</span>
+                                {{end}}
+                            </div>
+                            <form method="POST" action="/agents" class="flex-gap-8" style="align-items: center;">
+                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                <input type="hidden" name="action" value="grant_permission">
+                                <input type="hidden" name="agent_id" value="{{.ID}}">
+                                <select name="account_id" required>
+                                    <option value="">-- account --</option>
+                                    {{range $.Data.Accounts}}
+                                    <option value="{{.ID}}">{{.EmailAddress}}</option>
+                                    {{end}}
+                                </select>
+                                <select name="capability" required>
+                                    <option value="">-- capability --</option>
+                                    {{range $.Data.DefaultCapabilities}}
+                                    <option value="{{.}}">{{.}}</option>
+                                    {{end}}
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-primary">Grant</button>
+                            </form>
+                        </td>
+                    </tr>
                     {{end}}
                 </tbody>
             </table>

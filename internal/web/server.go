@@ -962,6 +962,21 @@ func (s *Server) testServerConnectivity(serverID int64) string {
 	return "Connectivity test: " + strings.Join(results, " · ")
 }
 
+// defaultAgentCapabilities is the trio auto-granted on agent creation when the
+// agent's email matches an existing account, and the only set accepted by
+// grant_permission. Revocation accepts arbitrary strings so operators can
+// remove non-standard rows that may have been inserted directly.
+var defaultAgentCapabilities = []string{"send", "read", "download_attachment"}
+
+func isKnownCapability(c string) bool {
+	for _, k := range defaultAgentCapabilities {
+		if k == c {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	pd := &PageData{
 		Title:       "Agents",
@@ -1007,8 +1022,33 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 					http.Redirect(w, r, "/agents", http.StatusSeeOther)
 					return
 				}
+			case "grant_permission":
+				agentID, errA := strconv.ParseInt(r.FormValue("agent_id"), 10, 64)
+				accountID, errB := strconv.ParseInt(r.FormValue("account_id"), 10, 64)
+				capability := strings.TrimSpace(r.FormValue("capability"))
+				if errA != nil || errB != nil || !isKnownCapability(capability) {
+					pd.Error = "Invalid grant request."
+				} else if err := s.db.GrantAgentPermission(agentID, accountID, capability); err != nil {
+					pd.Error = "Could not grant permission: " + err.Error()
+				} else {
+					http.Redirect(w, r, "/agents", http.StatusSeeOther)
+					return
+				}
+			case "revoke_permission":
+				agentID, errA := strconv.ParseInt(r.FormValue("agent_id"), 10, 64)
+				accountID, errB := strconv.ParseInt(r.FormValue("account_id"), 10, 64)
+				capability := strings.TrimSpace(r.FormValue("capability"))
+				if errA != nil || errB != nil || capability == "" {
+					pd.Error = "Invalid revoke request."
+				} else if err := s.db.RevokeAgentPermission(agentID, accountID, capability); err != nil {
+					pd.Error = "Could not revoke permission: " + err.Error()
+				} else {
+					http.Redirect(w, r, "/agents", http.StatusSeeOther)
+					return
+				}
 			default:
-				// create_agent + auto-create token
+				// create_agent + auto-create token + auto-grant default capabilities
+				// when the agent's email matches an existing account.
 				displayName := strings.TrimSpace(r.FormValue("display_name"))
 				agentEmail := strings.TrimSpace(r.FormValue("agent_email"))
 				if displayName == "" || agentEmail == "" {
@@ -1025,6 +1065,22 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 							pd.Success = "Agent created. Copy the API token now — it will not be shown again."
 							pd.Data["NewToken"] = plaintext
 							pd.Data["NewTokenAgentID"] = agentID
+							// Auto-grant the default trio if a matching account exists.
+							// Failures here log a warning but do not break agent creation —
+							// the operator can still grant manually from the UI.
+							if acct, lookupErr := s.db.GetAccountByEmail(agentEmail); lookupErr != nil {
+								slog.Warn("auto-grant: lookup account by email failed", "agent_id", agentID, "error", lookupErr)
+							} else if acct != nil {
+								granted := 0
+								for _, cap := range defaultAgentCapabilities {
+									if grantErr := s.db.GrantAgentPermission(agentID, acct.ID, cap); grantErr != nil {
+										slog.Warn("auto-grant: grant failed", "agent_id", agentID, "account_id", acct.ID, "capability", cap, "error", grantErr)
+									} else {
+										granted++
+									}
+								}
+								slog.Info("auto-granted default capabilities", "agent_id", agentID, "account_id", acct.ID, "granted", granted)
+							}
 						}
 					}
 				}
@@ -1056,6 +1112,27 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		slog.Error("list accounts for agent emails", "error", err)
 	}
 	pd.Data["Accounts"] = accounts
+
+	// Build permissions map (agent_id -> []AgentPermission) and an
+	// account-email-by-id lookup so the template can render grant/revoke rows
+	// without re-walking the accounts slice on every iteration.
+	permissionsByAgent := make(map[int64][]model.AgentPermission, len(agents))
+	for _, a := range agents {
+		perms, err := s.db.ListAgentPermissions(a.ID)
+		if err != nil {
+			slog.Error("list agent permissions", "error", err, "agent_id", a.ID)
+			continue
+		}
+		permissionsByAgent[a.ID] = perms
+	}
+	pd.Data["PermissionsByAgent"] = permissionsByAgent
+
+	accountEmailByID := make(map[int64]string, len(accounts))
+	for _, ac := range accounts {
+		accountEmailByID[ac.ID] = ac.EmailAddress
+	}
+	pd.Data["AccountEmailByID"] = accountEmailByID
+	pd.Data["DefaultCapabilities"] = defaultAgentCapabilities
 
 	s.render(w, r, "agents.html", pd)
 }

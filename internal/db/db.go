@@ -1336,6 +1336,82 @@ func (db *DB) CheckAgentCapability(ctx context.Context, agentID int64, accountID
 	return count > 0, nil
 }
 
+// GrantAgentPermission idempotently inserts an (agent, account, capability) grant.
+// Relies on UNIQUE(agent_id, account_id, capability); duplicate grants are silently ignored.
+func (db *DB) GrantAgentPermission(agentID, accountID int64, capability string) error {
+	_, err := db.conn.Exec(
+		"INSERT OR IGNORE INTO agent_permissions (agent_id, account_id, capability) VALUES (?, ?, ?)",
+		agentID, accountID, capability,
+	)
+	if err != nil {
+		return fmt.Errorf("grant agent permission: %w", err)
+	}
+	return nil
+}
+
+// RevokeAgentPermission removes a single (agent, account, capability) grant.
+func (db *DB) RevokeAgentPermission(agentID, accountID int64, capability string) error {
+	_, err := db.conn.Exec(
+		"DELETE FROM agent_permissions WHERE agent_id = ? AND account_id = ? AND capability = ?",
+		agentID, accountID, capability,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke agent permission: %w", err)
+	}
+	return nil
+}
+
+// ListAgentPermissions returns all permission rows for the given agent, ordered by account then capability.
+func (db *DB) ListAgentPermissions(agentID int64) ([]model.AgentPermission, error) {
+	rows, err := db.conn.Query(
+		"SELECT id, agent_id, account_id, capability FROM agent_permissions WHERE agent_id = ? ORDER BY account_id, capability",
+		agentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list agent permissions: %w", err)
+	}
+	defer rows.Close()
+	var perms []model.AgentPermission
+	for rows.Next() {
+		var p model.AgentPermission
+		if err := rows.Scan(&p.ID, &p.AgentID, &p.AccountID, &p.Capability); err != nil {
+			return nil, fmt.Errorf("scan agent permission: %w", err)
+		}
+		perms = append(perms, p)
+	}
+	return perms, rows.Err()
+}
+
+// GetAccountByEmail returns the account whose email_address matches exactly, or nil if none.
+func (db *DB) GetAccountByEmail(emailAddress string) (*model.Account, error) {
+	row := db.conn.QueryRow(
+		`SELECT a.id, a.name, a.email_address,
+		        COALESCE(a.server_id, 0),
+		        COALESCE(ms.name, ''),
+		        COALESCE(ms.smtp_host, ''),
+		        COALESCE(ms.smtp_port, 0),
+		        COALESCE(ms.smtp_tls, 1),
+		        COALESCE(ms.imap_host, ''),
+		        COALESCE(ms.imap_port, 0),
+		        COALESCE(ms.imap_tls, 1),
+		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
+		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
+		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
+		 FROM accounts a
+		 LEFT JOIN mail_servers ms ON ms.id = a.server_id
+		 WHERE a.email_address = ?`,
+		emailAddress,
+	)
+	a, err := scanAccount(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get account by email %q: %w", emailAddress, err)
+	}
+	return &a, nil
+}
+
 // --- Agent token queries ---
 
 func hashToken(plaintext string) string {
