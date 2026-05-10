@@ -119,7 +119,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			plainToken := strings.TrimPrefix(authHeader, "Bearer ")
 
 			// Check if we already have a session for this token (avoid repeated DB lookups).
-			sessionID := r.Header.Get("Mcp-Session")
+			// The MCP Streamable HTTP transport propagates the SDK-assigned session ID via
+			// the Mcp-Session-Id header on every non-initialize request.
+			sessionID := r.Header.Get("Mcp-Session-Id")
 			s.sessionsMu.RLock()
 			existing := s.sessions[sessionID]
 			if existing == nil {
@@ -136,6 +138,16 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 					delete(s.sessions, "token:"+plainToken)
 					s.sessionsMu.Unlock()
 				} else {
+					// Bridge: ensure the session is also keyed by the current Mcp-Session-Id
+					// so withAuth (which looks up via req.Session.ID()) can find it. The first
+					// request in a session arrives without an Mcp-Session-Id header, so the
+					// session is initially stored only under "token:<plain>"; on the next
+					// request the SDK has assigned an ID, and we bridge here.
+					if sessionID != "" {
+						s.sessionsMu.Lock()
+						s.sessions[sessionID] = existing
+						s.sessionsMu.Unlock()
+					}
 					r = r.WithContext(withSession(r.Context(), existing))
 					next.ServeHTTP(w, r)
 					return
