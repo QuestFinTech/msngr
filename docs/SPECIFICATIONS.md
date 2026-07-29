@@ -4,6 +4,31 @@
 **Expansion:** Mail Secure Network Gateway Relay
 **Status:** Product and architecture specification for first implementation
 
+> **This is the design document, not a description of the running system.** It records
+> what MSNGR was specified to be; parts of it are not built. The table in
+> [§0](#0-implementation-status) says which. For what the software actually does today,
+> see the [README](../README.md), [Getting Started](GETTING_STARTED.md) and the
+> [MCP API Reference](MCP_API.md).
+
+## 0. Implementation status
+
+As of v0.2.0:
+
+| Area | Spec | Status |
+|---|---|---|
+| Policy layers | §13.2 — four layers A/B/C/D | **Partial.** A (config guardrails) and C (dynamic DB rules) are implemented. B (static YAML policy) and D (runtime state: rate limits, one-time approvals, temporary blocks) are **not** — there is no rate limiting on agent actions |
+| Decision outcomes | §13.1 — allow / deny / hold | Implemented |
+| Rule types | §13.3 | Mostly implemented. Time-window checks are **not** implemented. Content criteria (recipients, keywords, attachments, size) apply only to `send`; other verbs evaluate agent, account and action type alone |
+| Credential encryption | §11.1, §22.2 | Implemented — AES-256-GCM, scrypt-derived key held outside the database |
+| Outbound lifecycle | §15.1 | Implemented, including terminal `send_completed` / `send_failed` audit events and a per-item status tool |
+| Inbound retrieval | §16 | Implemented for `INBOX` on a rolling 24-hour window. Other folders are not polled; server-side move is **not** implemented |
+| Storage modes | §10.1 | `metadata` and `full` behave as specified. `headers` currently behaves as `metadata` — headers are not separately captured |
+| Retention | §10.2, §25 | **Not implemented.** Retention values are configurable in Settings but nothing prunes on them |
+| Attachment handling | §17 | Implemented, including per-agent `download_attachment` capability and hash recording |
+| Health/readiness | §25.2 | Implemented at `GET /health`, including which accounts are degraded and since when |
+| Metrics | §18.3 | Surfaced in the operator dashboard rather than as a metrics endpoint |
+| CLI surface | §24 | `run`, `init`, `doctor`, `config check`, `rule simulate`, `export audit` and `version` exist. `migrate` (migrations run automatically at startup) and `account test` (available in the web UI and over MCP) do **not** |
+
 ## 1. Purpose
 
 MSNGR is a **policy-enforced mail gateway for MCP agents and human operators**. It provides controlled email sending and retrieval over IMAP and SMTP, with strong enforcement of who may perform which action, against which account, toward which recipients, under which rules.

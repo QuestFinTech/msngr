@@ -27,6 +27,11 @@ Set the environment variable before starting:
 export MSNGR_ENCRYPTION_KEY="your-secret-key-here"
 ```
 
+This key encrypts mail account credentials at rest. Two things follow from that:
+
+- **Keep it.** Changing the key makes stored credentials undecryptable, and each account's credentials have to be re-entered in the web UI. There is no rotation path.
+- **Leaving it unset is allowed but not advised.** MSNGR starts, warns at boot, and stores credentials in cleartext. Setting the key later encrypts existing credentials on the next start. `msngr doctor` reports which state you are in.
+
 Start the server:
 
 ```bash
@@ -74,24 +79,28 @@ Navigate to **Agents** and create an agent:
 - **Name**: Display name shown in audit logs and as the sender name (e.g. `Claude`)
 - **Agent Email**: Select which mail account this agent authenticates with
 
-After creation, click **Renew** to generate an API token. The token is shown once — copy it and store it securely. It's a 64-character hex string.
+An API token is generated when the agent is created. The token is shown once — copy it and store it securely. It's a 64-character hex string. Use **Renew** later to revoke the existing token and issue a new one.
 
 ### Agent Permissions
 
-Permissions are configured in the database and control what each agent can do on each account:
+Permissions are granted per account from the agent's row in the web UI, and control what each agent can do on each account:
 
 | Capability | Grants |
 |---|---|
+| `read` | List, search, read, mark and delete messages, and trigger a poll |
 | `send` | Send email via `msngr_request_send` and `msngr_validate_send` |
-| `read` | Read message content via `msngr_read_message` |
-| `list` | List and search messages |
 | `download_attachment` | Download file attachments from stored messages |
+| `review_hold` | Approve or reject held messages. Never granted automatically |
 
-An agent can have permissions on multiple accounts. For example, an agent might have `send + read + list` on its own account and `read + list` on another account for cross-account monitoring.
+If the agent's email address matches an existing account, `read`, `send` and `download_attachment` are granted on it automatically at creation. Everything else is explicit.
+
+Each capability is checked on its own: holding `send` does not imply `read`, so a send-only agent cannot read the mailbox it sends from. An agent can have different capabilities on different accounts — for example `read + send` on its own account and `read` only on another for cross-account monitoring.
+
+`review_hold` deserves a second thought before granting it. Holds exist so that a person decides; an agent that can release held mail turns the hold into a delay. Even with the capability, an agent can never review a message it queued itself.
 
 ## 6. Set Up Policy Rules
 
-Navigate to **Rules > Manage**. MSNGR evaluates three policy layers in order:
+Navigate to **Rules > Manage**. MSNGR evaluates two policy layers in order:
 
 ### Layer A: Config Safety Limits
 
@@ -137,17 +146,21 @@ Action: **allow** — Lets agents send to your own domain without review.
 ```
 Action: **hold** — Any outbound mail not caught by a higher-priority rule gets held for operator review. This is your safety net.
 
-**Block sensitive keywords** (priority 5):
+**Block a sensitive keyword** (priority 5):
 ```json
-{"keywords_present": ["CONFIDENTIAL", "SECRET"], "action_type": "send"}
+{"keywords_present": ["CONFIDENTIAL"], "action_type": "send"}
 ```
-Action: **deny** — Prevents agents from sending messages containing sensitive keywords. Priority 5 ensures this is checked before the allow rule.
+Action: **deny** — Prevents agents from sending messages containing the keyword. Priority 5 ensures this is checked before the allow rule.
 
-**Allow delete for internal messages** (priority 15):
+Note that `keywords_present` requires **every** listed keyword to appear. `["CONFIDENTIAL", "SECRET"]` matches only a message containing both words, which is rarely what you want — use one rule per keyword to block either.
+
+**Allow deletion on a specific account** (priority 15):
 ```json
-{"domain": "example.com", "action_type": "delete"}
+{"action_type": "delete", "account_id": 1}
 ```
-Action: **allow** — Lets agents delete messages from your own domain.
+Action: **allow** — Lets agents delete messages on account 1. Without a matching rule, deletion falls through to the default deny.
+
+Only `action_type`, `account_id` and `agent_id` are usable for non-send actions. Deleting, marking and reading evaluate the agent, the account and the verb — the message's addresses, subject and body are not part of the evaluation, so `domain`, `recipient`, `sender` and the keyword criteria never match a `delete` rule.
 
 ### Verifying Rules
 
@@ -155,14 +168,26 @@ Use **Rules > Simulate** to test how a hypothetical action would be evaluated. E
 
 ### Match Criteria Reference
 
-| Field | Type | Description |
+A rule matches when **every** field present in its criteria matches. An empty criteria object `{}` matches everything.
+
+| Field | Type | Matches when |
 |---|---|---|
-| `action_type` | string | `send`, `read`, `delete`, `mark`, `download_attachment` |
-| `domain` | string | Recipient domain (e.g. `example.com`). Supports regex: `"/(gmail\\.com\|yahoo\\.com)/"` |
-| `agent_id` | integer | Match a specific agent by ID |
-| `keywords_present` | array | Match if subject or body contains any of these strings |
-| `max_recipients` | integer | Match if recipient count exceeds this |
-| `attachment_present` | boolean | Match if the message has attachments |
+| `action_type` | string | The action is exactly this: `send`, `read`, `delete`, `mark`, `download_attachment` |
+| `agent_id` | string | The agent's **display name** equals this. Despite the field name it is not a numeric ID — `{"agent_id": "Claude"}` |
+| `account_id` | integer | The action is on this account ID |
+| `sender` | string | The From address matches. Exact and case-insensitive, or regex if wrapped in slashes |
+| `recipient` | string | Any To or Cc address matches. Exact or regex, as above |
+| `domain` | string | Any recipient's domain matches. Exact or regex: `"/(gmail\\.com\|yahoo\\.com)/"` |
+| `keywords_present` | array | Subject or body contains **all** of these strings (case-insensitive) |
+| `keywords_absent` | array | Subject or body contains **none** of these strings |
+| `attachment_present` | boolean | The message has attachments (`true`) or has none (`false`) |
+| `attachment_types` | array | At least one attachment matches one of these MIME types or extensions (e.g. `[".pdf", "image/png"]`) |
+| `max_size` | integer | The message is **at most** this many bytes |
+| `max_recipients` | integer | There are **at most** this many To + Cc recipients |
+
+`max_size` and `max_recipients` are upper bounds on when the rule *applies*, not thresholds that trigger it. `{"max_recipients": 5, "action_type": "send"}` with action `allow` means "allow sends to five recipients or fewer" — a six-recipient send does not match the rule and falls through to the default deny. To block large sends outright, set the corresponding limit in `hard_policy`, which is enforced at Layer A.
+
+Regex patterns are wrapped in forward slashes and matched case-insensitively. An invalid pattern never matches.
 
 ## 7. Connect an MCP Client
 
@@ -187,6 +212,16 @@ The message goes through policy evaluation:
 - **allow** — Queued for delivery (typically sent within 10 seconds)
 - **hold** — Paused for operator review (check Operations > Holds in the web UI)
 - **deny** — Blocked with an explanation
+
+All three outcomes return a `correlation_id` you can pass to `msngr_explain_decision`.
+
+**`queued` does not mean sent.** It means policy passed and the gateway will attempt delivery. Confirm the outcome with the `queue_id` from the response:
+
+```
+msngr_queue_status(queue_id: 7)
+```
+
+This reports `sent`, `failed`, `held` or still `queued`, along with the SMTP server's own reply and the attempt count. A delivered message also leaves a `send_completed` audit event under the same correlation ID; a failed one leaves `send_failed`.
 
 ### Sending Attachments
 
@@ -217,12 +252,26 @@ msngr_download_attachment(message_id: 42, filename: "report.pdf")
 
 Downloading attachments requires the `download_attachment` capability and the account must use `full` storage mode.
 
+MSNGR polls INBOX on an interval, so an empty result may just mean it has not looked yet. `msngr_list_messages` reports `last_polled_at` alongside the results, and `msngr_poll_account()` forces a retrieval now rather than waiting for the next cycle.
+
+Delivered outbound mail is filed under the account's Sent folder — usually named `INBOX.Sent` rather than `Sent`, depending on the server. `msngr_list_messages` names the folders that hold messages when you ask for one that does not.
+
 ## 8. Monitor Operations
 
 - **Operations > Queue** — Watch outbound messages move through the delivery lifecycle
 - **Operations > Holds** — Review and release/deny held messages
 - **Operations > Audit** — Full trail of every agent and operator action
-- **Dashboard** — Overview of accounts, agents, rules, queue depth, pending holds, and audit events
+- **Dashboard** — Configuration totals plus a Usage section: mail received and sent, delivery rate, holds and denials over a 7/30/90-day window, a daily volume chart, per-account and per-agent activity, and storage consumption
+- **Health endpoint** — `GET /health` needs no authentication and returns HTTP 503 when any account is unhealthy, naming the affected accounts, their last error and how long they have been failing. Point a monitoring probe at it; a broken mailbox is otherwise easy to miss for weeks
+
+### Not yet implemented
+
+Two things on the Settings page do not do anything yet, and are worth knowing before you rely on them:
+
+- **Retention periods** are stored but nothing prunes on them. Messages, archives, audit events and queue rows accumulate indefinitely.
+- **`ticks.maintenance_ms`** in `config.yaml` configures the cleanup interval for that same absent job.
+
+Storage growth therefore needs watching — the Dashboard's Storage panel is the place to do it.
 
 ## Next Steps
 

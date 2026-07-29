@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go 1.24+** — [Download](https://go.dev/dl/)
+- **Go 1.26+** — [Download](https://go.dev/dl/)
 - **GNU Make** — Pre-installed on Linux/macOS; on Windows use [MSYS2](https://www.msys2.org/) or WSL
 - **Git** — For version/commit embedding
 

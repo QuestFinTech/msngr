@@ -27,7 +27,8 @@ log:
 ticks:
   imap_poll_ms: 30000       # IMAP polling interval
   queue_process_ms: 10000   # Outbound queue processing interval
-  maintenance_ms: 300000    # Retention/cleanup interval
+  maintenance_ms: 300000    # Reserved: retention/cleanup is not implemented yet,
+                            # so this value currently has no effect
 
 # Session timeouts
 session:

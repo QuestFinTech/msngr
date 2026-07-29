@@ -51,11 +51,12 @@ Fields are omitted when not applicable. `error_code` and `retryable` only appear
 | `ACCOUNT_DISABLED` | Selected account is disabled |
 | `POLICY_DENIED` | Policy engine denied the action |
 | `ATTACHMENT_NOT_AVAILABLE` | Attachment not in filesystem storage |
-| `FOLDER_NOT_RETRIEVED` | Folder holds no retrieved messages; MSNGR only polls `INBOX` |
+| `FOLDER_NOT_RETRIEVED` | No messages are stored in that folder; the response lists the folders that do have some |
 | `SELF_REVIEW_FORBIDDEN` | An agent tried to review a hold for a message it queued |
 | `ALREADY_REVIEWED` | The hold has already been approved or rejected |
 | `POLL_TOO_SOON` | `msngr_poll_account` called inside the rate-limit window |
 | `POLL_FAILED` | Retrieval was attempted and failed |
+| `NOT_SUPPORTED` | The gateway process is not running retrieval, so it cannot poll on demand |
 | `INTERNAL_ERROR` | Server-side error |
 
 ## Required Workflow
@@ -67,7 +68,10 @@ msngr_login
   -> <account-scoped tools>
 ```
 
-`msngr_list_holds`, `msngr_review_hold`, `msngr_explain_decision`, `msngr_list_accounts`, and `msngr_test_account_connectivity` do not require an account to be selected.
+`msngr_list_holds`, `msngr_review_hold`, `msngr_queue_status`, `msngr_explain_decision`, `msngr_list_accounts`, and `msngr_test_account_connectivity` do not require an account to be selected. They are still scoped to the accounts the agent holds a permission on.
+
+Selecting an account is not authorization. It establishes which account the
+account-scoped tools operate on; each of those tools then checks its own capability.
 
 ---
 
@@ -111,13 +115,25 @@ List mail accounts the agent has permission to access.
   "id": 1,
   "name": "Main Inbox",
   "email_address": "inbox@example.com",
+  "server_id": 1,
+  "server_name": "Main Mail Server",
+  "smtp_host": "smtp.example.com",
+  "smtp_port": 465,
+  "imap_host": "imap.example.com",
+  "imap_port": 993,
   "retrieval_enabled": true,
   "sending_enabled": true,
+  "delete_after_retrieval": true,
   "storage_mode": "full",
   "enabled": true,
-  "health_status": "ok"
+  "health_status": "ok",
+  "last_polled_at": "2026-07-29T19:09:58Z"
 }]
 ```
+
+`delete_after_retrieval` is worth reading before assuming mail stays on the server: when it is true, MSNGR removes each message from the mailbox once it has stored it, so it cannot be re-fetched or read from another client.
+
+`health_changed_at`, `health_error` and `last_polled_at` are omitted when empty.
 
 ---
 
@@ -148,7 +164,7 @@ Select a mail account for the current session.
 
 List messages in a mail folder.
 
-**Auth:** Required | **Account:** Required
+**Auth:** Required | **Account:** Required | **Capability:** `read`
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -192,7 +208,7 @@ List messages in a mail folder.
 
 **Folders.** MSNGR polls `INBOX` and lists locally stored messages. Requesting a folder that holds no stored messages returns `FOLDER_NOT_RETRIEVED` along with the folders that do, rather than an empty result — an empty folder, an unpolled one, and one that does not exist call for different responses.
 
-Delivered outbound messages are recorded under the account's Sent folder, so `folder: "Sent"` lists what the gateway has sent as well as what it received. `direction` distinguishes them.
+Delivered outbound messages are recorded under the account's Sent folder, and `direction` distinguishes them from received mail. The folder's name comes from the server rather than being assumed — it is frequently `INBOX.Sent` rather than `Sent`, so read `available_folders` instead of guessing.
 
 ---
 
@@ -224,7 +240,7 @@ Use it before concluding an inbox is empty: without it, an empty result cannot b
 
 Read a message including body text and HTML.
 
-**Auth:** Required | **Account:** Required
+**Auth:** Required | **Account:** Required | **Capability:** `read`
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -247,7 +263,7 @@ Read a message including body text and HTML.
 
 Search messages by subject, sender, or recipient.
 
-**Auth:** Required | **Account:** Required
+**Auth:** Required | **Account:** Required | **Capability:** `read`
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -479,7 +495,7 @@ List messages held for operator review.
 
 Approve or reject a held message.
 
-**Auth:** Required | **Account:** Not required
+**Auth:** Required | **Account:** Not required | **Capability:** `review_hold` on the held message's account
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

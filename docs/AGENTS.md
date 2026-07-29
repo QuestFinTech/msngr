@@ -91,6 +91,17 @@ msngr_read_message(message_id: 42)
 msngr_search_messages(query: "quarterly report")
 ```
 
+`msngr_list_messages` returns retrieval state alongside the messages, including
+`last_polled_at`. An empty inbox is only meaningful next to that timestamp — if the
+gateway has not polled recently, call `msngr_poll_account()` to retrieve now rather
+than waiting for the next cycle. It is rate-limited to one poll per account every
+10 seconds.
+
+Requesting a folder MSNGR holds nothing for returns `FOLDER_NOT_RETRIEVED` together
+with the folders that do have messages, rather than an empty list. Delivered outbound
+mail is filed under the account's Sent folder, whose name is server-dependent and
+often `INBOX.Sent`.
+
 ### Sending Email
 
 All outbound email is policy-evaluated. Messages are never sent directly — they go through the outbound queue.
@@ -110,6 +121,20 @@ Possible outcomes:
 - **held** — Policy flagged the message for operator review. An operator must approve it before it sends.
 - **denied** — Policy blocked the message. Check the `matched_rule` and `suggestion` in the response.
 
+All three return a `correlation_id`.
+
+**`queued` is not `sent`.** Delivery happens asynchronously. To find out whether the
+message was actually transmitted, use the `queue_id` from the response:
+
+```
+msngr_queue_status(queue_id: 7)
+```
+
+It reports the current state (`queued`, `sending`, `sent`, `failed`, `held`,
+`rejected`, `cancelled`), what that state means, the attempt count, and the SMTP
+server's own reply for the last attempt. Do not infer delivery from the absence of an
+error — check.
+
 ### Understanding Policy Decisions
 
 ```
@@ -127,12 +152,22 @@ msngr_delete_message(message_id: 42)          # subject to policy
 msngr_download_attachment(message_id: 42, filename: "report.pdf")
 ```
 
-### Reviewing Holds (Admin)
+### Reviewing Holds (rarely available to agents)
 
-Agents with appropriate access can review held messages:
+`msngr_list_holds` shows held messages on accounts the agent can access:
 
 ```
 msngr_list_holds(status: "pending")
+```
+
+Releasing one is a different matter. `msngr_review_hold` requires the `review_hold`
+capability, which is never granted automatically, and an agent can never review a
+message it queued itself — that returns `SELF_REVIEW_FORBIDDEN` regardless of
+capabilities. Holds exist so that a person decides; in most deployments they are
+resolved by an operator in the web UI, and an agent calling this tool should expect
+`ACCESS_DENIED`.
+
+```
 msngr_review_hold(hold_id: 3, action: "approve")
 ```
 
@@ -146,15 +181,15 @@ Returns IMAP and SMTP reachability status for the account's mail server.
 
 ## Policy Model
 
-Every agent action passes through a 3-layer policy engine:
+Every agent action passes through two policy layers:
 
-1. **Config layer (Layer A)** — Hard safety limits from `config.yaml`: max message size, max recipients, forbidden file extensions, denied domains. Always enforced first. Cannot be overridden by rules.
+1. **Config layer (Layer A)** — Hard safety limits from `config.yaml`: max message size, max recipients, forbidden file extensions, denied domains, plus mandatory agent identity and the `send` capability. Always enforced first. Cannot be overridden by rules.
 
 2. **Rules layer (Layer C)** — Operator-defined rules with JSON match criteria. Rules have priorities (lower number = higher priority) and can `allow`, `deny`, or `hold` an action. Matched in priority order; first match wins.
 
-3. **Runtime layer** — Temporary states such as rate limits and one-time approvals.
-
 **Default decision: deny.** If no rule matches an action, it is blocked. Operators must create explicit allow rules for the actions agents should be able to perform.
+
+The specification also describes a Layer B (static YAML policy) and Layer D (runtime state such as rate limits and one-time approvals). Neither is implemented — **agent actions are not rate-limited**.
 
 ## Session Lifecycle
 
@@ -167,6 +202,6 @@ Every agent action passes through a 3-layer policy engine:
 
 - Tokens are shown once on creation and stored as SHA-256 hashes. Treat them like passwords.
 - An agent can only access accounts it has explicit permissions for.
-- All agent actions are audit-logged with the agent's identity, action, outcome, and timestamp.
+- All agent actions are audit-logged with the agent's numeric identity, action, outcome, and timestamp. Sends additionally record their delivery outcome, recipients and the SMTP server's reply under the same correlation ID.
 - Outbound email always goes through the queue — agents cannot bypass policy or send directly.
-- The `download_attachment` capability is separate from `read` — reading a message does not grant access to its attachments.
+- Each capability is checked independently. Selecting an account proves only that the agent has some grant on it: `read` does not imply `send`, `send` does not imply `read`, and `download_attachment` is separate from both — reading a message does not grant access to its attachments.

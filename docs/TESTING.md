@@ -10,8 +10,9 @@
   - **Test User** (`test@sys.lu`) — with a valid API token
 - Two mail accounts: `claude@sys.lu` (ID 1), `test@sys.lu` (ID 2)
 - Permissions:
-  - Claude: send+read+list on account 1, read+list+download_attachment on account 2
-  - Test User: send+read+list on account 2
+  - Claude: `send` + `read` on account 1, `read` + `download_attachment` on account 2
+  - Test User: `send` + `read` on account 2
+  - Neither agent has `review_hold` on any account
 
 No external mail services are required — all tests use MSNGR's own MCP tools to send mail between accounts, with IMAP polling to verify delivery.
 
@@ -40,10 +41,14 @@ Create the following rules via the Rules > Manage page:
 - Match: `{"keywords_present": ["CONFIDENTIAL"], "action_type": "send"}`
 - Explanation: "Block messages containing CONFIDENTIAL"
 
-**Rule 4: Allow delete for internal messages** (priority 15)
+**Rule 4: Allow deletion on account 1** (priority 15)
 - Action: allow
-- Match: `{"domain": "sys.lu", "action_type": "delete"}`
-- Explanation: "Allow deleting messages from internal sys.lu domain"
+- Match: `{"action_type": "delete", "account_id": 1}`
+- Explanation: "Allow deleting messages on the Claude account"
+
+Note: a delete action carries no addresses, so `domain`, `recipient` and keyword
+criteria never match one. Non-send rules can only match on `action_type`,
+`account_id` and `agent_id`.
 
 ### T1.3 — Verify Rules on Simulate Page
 - Navigate to Rules > Simulate
@@ -177,7 +182,8 @@ Authenticate as Test User via `msngr_login` before running these tests.
 
 ### T5.2 — Approve Hold
 - Approve the held message
-- Verify status changes to "released"
+- Verify the hold status changes to "approved" and the queue item returns to "queued"
+- Verify a `hold_approved` audit event is written for the operator
 
 ### T5.3 — Check Queue
 - Navigate to Operations > Queue
@@ -211,7 +217,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 - Call `msngr_mark_message` with flag: `read`
 - Expected: success
 - Call `msngr_delete_message` with the message ID
-- Expected: policy evaluated — **allow** (Rule 4 matches: internal domain + delete action)
+- Expected: policy evaluated — **allow** (Rule 4 matches: delete action on account 1)
 
 ## Phase 7: Session Timeout Verification
 
@@ -299,10 +305,108 @@ Authenticate as Test User via `msngr_login` before running these tests.
 - Call `msngr_list_accounts`
 - Expected: success — Bearer token auth still works as fallback
 
+## Phase 13: Delivery Confirmation
+
+### T13.1 — Queue Status Reaches a Terminal State
+- As Claude, send internal mail and keep the `queue_id`
+- Call `msngr_queue_status` with that `queue_id`
+- Expected: `status` moves from `queued` to `sent` within a few queue ticks
+- Verify the response carries `last_smtp_response` containing the server's own reply
+  (e.g. `250 2.0.0 Ok: queued as ...`), `attempts: 1`, and the recipient list
+
+### T13.2 — Terminal Audit Event
+- Call `msngr_explain_decision` with the correlation ID from T13.1
+- Expected: **two** events — `send_requested` with outcome `accepted`, then
+  `send_completed` with outcome `success`
+- Verify `send_requested` records the recipients and subject, and that
+  `send_completed` carries `message_id`, `smtp_host`, `smtp_response` and `attempts`
+
+### T13.3 — Queue Status Is Account-Scoped
+- As Test User, call `msngr_queue_status` with Claude's `queue_id` from T13.1
+- Expected: **NOT_FOUND** — the same answer as a non-existent ID, so the tool cannot be
+  used to probe for queue items on other accounts
+
+### T13.4 — Sent Copy Is Retained
+- As Claude, call `msngr_list_messages` with `folder: "Sent"`
+- Expected: **FOLDER_NOT_RETRIEVED** if the server names it differently, with
+  `available_folders` listing the real name (commonly `INBOX.Sent`)
+- List that folder instead
+- Expected: the sent message, with `direction: "outbound"`, `stored_on_disk: true`,
+  a populated `content_hash` and an `archive_path`
+- Verify the same message is visible in the account's Sent folder from an ordinary
+  mail client — the gateway APPENDs it over IMAP
+
+## Phase 14: Capability Enforcement
+
+### T14.1 — Read Without the Read Capability
+- Revoke `read` from Test User on account 2, leaving `send`
+- As Test User, select account 2 and call `msngr_list_messages`
+- Expected: **ACCESS_DENIED** naming the `read` capability
+- Call `msngr_request_send` to an internal address
+- Expected: success — `send` is unaffected by the missing `read`
+- Restore the `read` grant
+
+### T14.2 — Poll Requires Read
+- With `read` revoked, call `msngr_poll_account`
+- Expected: **ACCESS_DENIED**
+
+### T14.3 — Hold Review Requires review_hold
+- As Claude, produce a held message (send to an external address)
+- Call `msngr_list_holds` — expected: the hold is visible
+- Call `msngr_review_hold` with `action: "approve"`
+- Expected: **ACCESS_DENIED** — no agent is granted `review_hold` by default
+
+### T14.4 — Self-Review Is Refused Even With the Capability
+- Grant `review_hold` to Claude on account 1
+- As Claude, attempt `msngr_review_hold` on the hold from T14.3, which Claude queued
+- Expected: **SELF_REVIEW_FORBIDDEN**
+- Revoke the grant afterwards
+
+## Phase 15: Retrieval Control
+
+### T15.1 — Poll on Demand
+- As Test User, send mail to `claude@sys.lu`
+- As Claude, immediately call `msngr_poll_account`
+- Expected: success, `new_messages` reflecting the retrieval, and a fresh
+  `last_polled_at`
+- Verify the message is now listed without waiting for the polling interval
+
+### T15.2 — Poll Rate Limit
+- Call `msngr_poll_account` again immediately
+- Expected: **POLL_TOO_SOON** with `retryable: true`
+
+### T15.3 — Retrieval State Accompanies an Empty Inbox
+- Call `msngr_list_messages` on a quiet folder
+- Expected: `data: []` (an empty array, never `null`) with `details` reporting
+  `last_polled_at`, `retrieval_enabled` and `health_status`
+
+## Phase 16: Operator Session Integrity
+
+### T16.1 — Forged Cookie Is Rejected
+- Log in to the web UI, then replace the `msngr_session` cookie value with
+  `1:admin@example.com` (the pre-signature format)
+- Reload `/dashboard`
+- Expected: redirect to `/login` — cookies are HMAC-signed and unsigned values are
+  refused
+
+### T16.2 — Dashboard Usage Reporting
+- Navigate to the Dashboard after running the phases above
+- Verify the Usage section reports non-zero Received and Sent for the window,
+  a delivery rate, a daily volume chart, and per-account and per-agent rows
+- Switch between the 7/30/90-day windows and verify the figures narrow accordingly
+
 ---
 
 ## Known Gaps
 
-- **Approve/reject audit logging**: Hold approval and rejection actions do not write audit events yet (send, deny, and hold events are logged)
 - **Session timeout test** (T7.1): Requires wait time, typically skipped in quick runs
 - **Idempotency**: No teardown between runs — rules from T1.2 will accumulate on repeated runs. Consider adding a cleanup step or checking for existing rules before creation.
+- **Bounce and rejection paths untested**: no test injects an SMTP rejection, an invalid recipient, or a transient failure, so `send_failed` is only covered by unit tests.
+
+## Unit Tests
+
+`make test` runs the Go test suite (`go test -race ./...`), which covers credential
+encryption and the legacy-plaintext upgrade path, SMTP delivery against a scripted
+server including the captured server reply and rejection handling, the account and
+queue queries, cookie signing and forgery rejection, and dashboard rendering. Those
+run without a mail server or a browser; the phases above cover what they cannot.

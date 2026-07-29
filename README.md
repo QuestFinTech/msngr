@@ -15,12 +15,12 @@
 
 MSNGR mediates between MCP agents, operators (via web UI), and external mail infrastructure (IMAP/SMTP). It is not a general-purpose mail client — it is a controlled mediation layer with strong policy enforcement, auditability, and least-privilege access.
 
-- **Policy engine** — 3-layer evaluation: config safety limits → operator-defined rules → runtime controls
-- **MCP interface** — 17 tools for agents to list, read, search, send, and manage email
-- **Operator web UI** — Dashboard, mail server/account config, agent management, rule CRUD, queue/hold operations, audit trail
+- **Policy engine** — Layered evaluation: config safety limits, then operator-defined rules
+- **MCP interface** — 17 tools for agents to list, read, search, send, and track email
+- **Operator web UI** — Dashboard with usage reporting, mail server/account config, agent management, rule CRUD, queue/hold operations, audit trail
 - **Agent authentication** — API token auth with per-account permission scoping
 - **Safe by default** — Deny decision when no rule matches; outbound mail goes through queue, never fire-and-forget
-- **Auditability** — Structured audit logging for all agent and operator actions
+- **Auditability** — Structured audit logging for all agent and operator actions, including the delivery outcome of every send
 - **Single binary** — No external dependencies beyond SQLite; embeds templates, migrations, and static assets
 
 ---
@@ -63,11 +63,12 @@ For cross-compilation and release builds, see [docs/BUILDING.md](docs/BUILDING.m
 
 | Layer | Source | Purpose |
 |-------|--------|---------|
-| **Config** | `config.yaml` | Safety limits: max message size, max recipients, forbidden extensions, deny domains |
-| **Rules** | SQLite / Web UI | Operator-defined rules with JSON match criteria, priority ordering, allow/deny/hold actions |
-| **Runtime** | In-memory | Temporary states: rate limits, one-time approvals |
+| **A — Config** | `config.yaml` | Safety limits: max message size, max recipients, forbidden extensions, deny domains, mandatory agent identity and send capability |
+| **C — Rules** | SQLite / Web UI | Operator-defined rules with JSON match criteria, priority ordering, allow/deny/hold actions |
 
 Default decision when no rule matches: **deny**.
+
+Layers A and C are what the engine evaluates today. Layers B (static YAML policy) and D (runtime state such as rate limits and one-time approvals) are described in the [specification](docs/SPECIFICATIONS.md) but are not implemented — **there are no rate limits on agent actions**.
 
 ## MCP Tools
 
@@ -120,13 +121,14 @@ internal/
   config/               YAML bootstrap config
   db/                   SQLite connection, migrations, queries
   model/                Domain types
-  policy/               3-layer policy engine
+  policy/               Layered policy engine
   imap/                 IMAP adapter and polling
   smtp/                 SMTP adapter (STARTTLS + implicit TLS)
   queue/                Outbound queue processor
   mcp/                  MCP tool handlers
   web/                  Operator web UI
   audit/                Structured audit logging
+  secret/               Credential encryption at rest
   storage/              Filesystem message archives
 ```
 
