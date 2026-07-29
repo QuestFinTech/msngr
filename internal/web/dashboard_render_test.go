@@ -47,7 +47,7 @@ func seededServer(t *testing.T) (*Server, *model.Operator) {
 
 	names := []string{"claude", "naia", "grace", "ash"}
 	for i, name := range names {
-		email := name + "@sys.lu"
+		email := name + "@example.com"
 		accountID, err := database.CreateAccount(&model.Account{
 			Name: email, EmailAddress: email, ServerID: serverID,
 			RetrievalEnabled: true, SendingEnabled: true, StorageMode: "full", Enabled: true,
@@ -142,7 +142,7 @@ func TestDashboardWithTrafficRendersChartAndTables(t *testing.T) {
 	}
 
 	// Per-account and per-agent rows.
-	for _, want := range []string{"claude@sys.lu", "naia@sys.lu", "grace@sys.lu", "ash@sys.lu"} {
+	for _, want := range []string{"claude@example.com", "naia@example.com", "grace@example.com", "ash@example.com"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("account %q is missing from the usage tables", want)
 		}

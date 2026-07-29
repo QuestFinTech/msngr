@@ -321,7 +321,7 @@ func (s *Server) registerTools(mcpServer *sdkmcp.Server) {
 				"properties": map[string]interface{}{
 					"login_email": map[string]interface{}{
 						"type":        "string",
-						"description": "Agent email address (e.g. claude@sys.lu)",
+						"description": "Agent email address (e.g. claude@example.com)",
 					},
 					"token": map[string]interface{}{
 						"type":        "string",
