@@ -158,15 +158,16 @@
                                     <tr><td><code>keywords_absent</code></td><td>array</td><td>None of these keywords may appear in subject + body</td></tr>
                                     <tr><td><code>attachment_present</code></td><td>boolean</td><td><code>true</code> = has attachments, <code>false</code> = no attachments</td></tr>
                                     <tr><td><code>attachment_types</code></td><td>array</td><td>MIME types or extensions: <code>[".pdf", "image/png"]</code></td></tr>
-                                    <tr><td><code>max_size</code></td><td>number</td><td>Deny if message size exceeds this (bytes)</td></tr>
-                                    <tr><td><code>max_recipients</code></td><td>number</td><td>Deny if total recipients (To+Cc) exceeds this</td></tr>
+                                    <tr><td><code>max_size</code></td><td>number</td><td>The message is <strong>at most</strong> this many bytes</td></tr>
+                                    <tr><td><code>max_recipients</code></td><td>number</td><td>There are <strong>at most</strong> this many To + Cc recipients</td></tr>
                                 </tbody>
                             </table>
                             <p class="mt-8"><strong>String matching:</strong> Plain strings are case-insensitive exact matches. Wrap in <code>/slashes/</code> for regex: <code>"domain": "/(gmail|yahoo)\\.com/"</code></p>
+                            <p class="mt-8"><strong>Size and recipient limits:</strong> <code>max_size</code> and <code>max_recipients</code> are upper bounds on when the rule <em>applies</em>, not thresholds that trigger it. An <code>allow</code> rule with <code>{"max_recipients": 5}</code> means "allow sends to five recipients or fewer" — a six-recipient send does not match and falls through to the default deny. To block oversized sends outright, set the limit in <code>hard_policy</code> instead, which is enforced at Layer A.</p>
                             <p class="mb-0"><strong>Examples:</strong></p>
                             <p class="mb-4"><code>{"action_type": "send", "domain": "example.com"}</code> — match sends to example.com</p>
                             <p class="mb-4"><code>{"keywords_present": ["CONFIDENTIAL"]}</code> — match any message containing "CONFIDENTIAL"</p>
-                            <p class="mb-4"><code>{"action_type": "send", "max_recipients": 5}</code> — match sends with more than 5 recipients</p>
+                            <p class="mb-4"><code>{"action_type": "send", "max_recipients": 5}</code> — match sends with 5 recipients or fewer</p>
                             <p class="mb-0"><code>{"agent_id": "Claude", "attachment_present": true}</code> — match when Claude sends attachments</p>
                         </div>
                     </details>
