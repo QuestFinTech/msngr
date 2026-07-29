@@ -28,7 +28,7 @@ const (
 // If CorrelationID is empty, one is generated.
 func QueueMessage(database *db.DB, item *model.OutboundItem) (int64, error) {
 	if item.CorrelationID == "" {
-		item.CorrelationID = generateCorrelationID()
+		item.CorrelationID = NewCorrelationID()
 	}
 	item.Status = StatusQueued
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -38,13 +38,17 @@ func QueueMessage(database *db.DB, item *model.OutboundItem) (int64, error) {
 	return database.InsertQueueItem(item)
 }
 
-// HoldMessage transitions a queued item to held and creates a hold record.
+// HoldMessage creates a hold record and transitions the queued item to held.
+//
+// The hold record is written first. If the status were flipped first and the insert
+// then failed, the item would sit in "held" with nothing in the review queue pointing
+// at it: invisible to the operator and never sent.
 func HoldMessage(database *db.DB, queueID, ruleID int64, reason string) error {
-	if err := database.UpdateQueueStatus(queueID, StatusHeld); err != nil {
-		return fmt.Errorf("update queue status to held: %w", err)
-	}
 	if err := database.InsertHold(queueID, ruleID, reason); err != nil {
 		return fmt.Errorf("insert hold: %w", err)
+	}
+	if err := database.UpdateQueueStatus(queueID, StatusHeld); err != nil {
+		return fmt.Errorf("update queue status to held: %w", err)
 	}
 	return nil
 }
@@ -82,8 +86,11 @@ func RejectHold(database *db.DB, holdID, operatorID int64) error {
 	return nil
 }
 
-// generateCorrelationID produces a random correlation ID using crypto/rand.
-func generateCorrelationID() string {
+// NewCorrelationID produces a random correlation ID using crypto/rand.
+//
+// Callers mint this before policy evaluation so that outcomes which never reach the
+// queue — denials in particular — still carry an ID the audit trail can be searched by.
+func NewCorrelationID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x",

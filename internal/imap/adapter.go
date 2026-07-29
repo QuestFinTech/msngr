@@ -111,10 +111,10 @@ func (c *Client) FetchMessages(since time.Time) ([]MessageEnvelope, error) {
 	uidSet := imap.UIDSetNum(uids...)
 
 	fetchOpts := &imap.FetchOptions{
-		Envelope:    true,
-		Flags:       true,
-		RFC822Size:  true,
-		UID:         true,
+		Envelope:   true,
+		Flags:      true,
+		RFC822Size: true,
+		UID:        true,
 	}
 
 	fetchCmd := c.inner.Fetch(uidSet, fetchOpts)
@@ -171,7 +171,7 @@ func (c *Client) FetchBody(uid uint32) (string, string, error) {
 
 	// First fetch body structure to find the right parts.
 	structOpts := &imap.FetchOptions{
-		UID: true,
+		UID:           true,
 		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 	}
 

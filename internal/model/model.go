@@ -32,25 +32,31 @@ type MailServer struct {
 
 // Account represents a configured mail account (IMAP/SMTP).
 type Account struct {
-	ID                int64  `json:"id"`
-	Name              string `json:"name"`
-	EmailAddress      string `json:"email_address"`
-	ServerID          int64  `json:"server_id"`
-	ServerName        string `json:"server_name,omitempty"`
-	SMTPHost          string `json:"smtp_host"`
-	SMTPPort          int    `json:"smtp_port"`
-	SMTPTLS           bool   `json:"smtp_tls"`
-	IMAPHost          string `json:"imap_host"`
-	IMAPPort          int    `json:"imap_port"`
-	IMAPTLS           bool   `json:"imap_tls"`
-	RetrievalEnabled      bool   `json:"retrieval_enabled"`
-	SendingEnabled        bool   `json:"sending_enabled"`
-	DeleteAfterRetrieval  bool   `json:"delete_after_retrieval"`
-	StorageMode           string `json:"storage_mode"` // metadata, headers, body, full
-	Enabled           bool   `json:"enabled"`
-	HealthStatus      string `json:"health_status"`
-	CreatedAt         string `json:"created_at"`
-	UpdatedAt         string `json:"updated_at"`
+	ID                   int64  `json:"id"`
+	Name                 string `json:"name"`
+	EmailAddress         string `json:"email_address"`
+	ServerID             int64  `json:"server_id"`
+	ServerName           string `json:"server_name,omitempty"`
+	SMTPHost             string `json:"smtp_host"`
+	SMTPPort             int    `json:"smtp_port"`
+	SMTPTLS              bool   `json:"smtp_tls"`
+	IMAPHost             string `json:"imap_host"`
+	IMAPPort             int    `json:"imap_port"`
+	IMAPTLS              bool   `json:"imap_tls"`
+	RetrievalEnabled     bool   `json:"retrieval_enabled"`
+	SendingEnabled       bool   `json:"sending_enabled"`
+	DeleteAfterRetrieval bool   `json:"delete_after_retrieval"`
+	StorageMode          string `json:"storage_mode"` // metadata, headers, body, full
+	Enabled              bool   `json:"enabled"`
+	HealthStatus         string `json:"health_status"`
+	// HealthChangedAt is when HealthStatus last changed value — not when it was last
+	// written. It answers "since when?"; UpdatedAt cannot, and LastPolledAt is the
+	// separate "we looked at this recently" signal.
+	HealthChangedAt string `json:"health_changed_at,omitempty"`
+	HealthError     string `json:"health_error,omitempty"`
+	LastPolledAt    string `json:"last_polled_at,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 // Agent represents an MCP caller with a named identity.
@@ -77,10 +83,10 @@ type Rule struct {
 	Name          string `json:"name"`
 	Enabled       bool   `json:"enabled"`
 	Priority      int    `json:"priority"`
-	Layer         string `json:"layer"`  // B, C, D
-	Scope         string `json:"scope"`  // global, account, agent
+	Layer         string `json:"layer"`          // B, C, D
+	Scope         string `json:"scope"`          // global, account, agent
 	MatchCriteria string `json:"match_criteria"` // JSON
-	Action        string `json:"action"` // allow, deny, hold
+	Action        string `json:"action"`         // allow, deny, hold
 	Explanation   string `json:"explanation"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
@@ -88,45 +94,48 @@ type Rule struct {
 
 // Message represents an email message (inbound or outbound metadata).
 type Message struct {
-	ID              int64   `json:"id"`
-	AccountID       int64   `json:"account_id"`
-	MessageID       string  `json:"message_id"` // RFC Message-ID
-	IMAPUID         int64   `json:"imap_uid"`
-	IMAPUIDValidity int64   `json:"imap_uidvalidity"`
-	Folder          string  `json:"folder"`
-	FromAddr        string  `json:"from_addr"`
-	ToAddrs         string  `json:"to_addrs"`  // JSON array
-	CcAddrs         string  `json:"cc_addrs"`  // JSON array
-	Subject         string  `json:"subject"`
-	Date            string  `json:"date"`
-	Size            int64   `json:"size"`
-	ContentHash     string  `json:"content_hash"`
-	Direction       string  `json:"direction"` // inbound, outbound
-	RetrievedAt     string  `json:"retrieved_at"`
-	ArchivePath     string  `json:"archive_path,omitempty"`
-	StoredOnDisk    bool    `json:"stored_on_disk"`
-	IsRead          bool    `json:"is_read"`
-	IsFlagged       bool    `json:"is_flagged"`
+	ID              int64  `json:"id"`
+	AccountID       int64  `json:"account_id"`
+	MessageID       string `json:"message_id"` // RFC Message-ID
+	IMAPUID         int64  `json:"imap_uid"`
+	IMAPUIDValidity int64  `json:"imap_uidvalidity"`
+	Folder          string `json:"folder"`
+	FromAddr        string `json:"from_addr"`
+	ToAddrs         string `json:"to_addrs"` // JSON array
+	CcAddrs         string `json:"cc_addrs"` // JSON array
+	Subject         string `json:"subject"`
+	Date            string `json:"date"`
+	Size            int64  `json:"size"`
+	// ContentHash is a SHA-256 over the content stored on disk. It is absent when the
+	// storage mode keeps no content, rather than being reported as an empty string that
+	// looks like tamper-evidence.
+	ContentHash  string `json:"content_hash,omitempty"`
+	Direction    string `json:"direction"` // inbound, outbound
+	RetrievedAt  string `json:"retrieved_at"`
+	ArchivePath  string `json:"archive_path,omitempty"`
+	StoredOnDisk bool   `json:"stored_on_disk"`
+	IsRead       bool   `json:"is_read"`
+	IsFlagged    bool   `json:"is_flagged"`
 }
 
 // OutboundItem represents a queued outbound message.
 type OutboundItem struct {
-	ID            int64   `json:"id"`
-	AccountID     int64   `json:"account_id"`
-	AgentID       *int64  `json:"agent_id,omitempty"`
-	CorrelationID string  `json:"correlation_id"`
-	Status        string  `json:"status"` // draft_requested, queued, held, rejected, sending, sent, failed, cancelled
-	FromAddr      string  `json:"from_addr"`
-	ToAddrs       string  `json:"to_addrs"` // JSON array
-	CcAddrs       string  `json:"cc_addrs"`
-	Subject       string  `json:"subject"`
-	BodyText      string  `json:"body_text"`
-	BodyHTML         string  `json:"body_html"`
-	AttachmentsJSON  string  `json:"attachments_json,omitempty"` // JSON array of Attachment objects
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
-	SentAt        *string `json:"sent_at,omitempty"`
-	ErrorMessage  string  `json:"error_message,omitempty"`
+	ID              int64   `json:"id"`
+	AccountID       int64   `json:"account_id"`
+	AgentID         *int64  `json:"agent_id,omitempty"`
+	CorrelationID   string  `json:"correlation_id"`
+	Status          string  `json:"status"` // draft_requested, queued, held, rejected, sending, sent, failed, cancelled
+	FromAddr        string  `json:"from_addr"`
+	ToAddrs         string  `json:"to_addrs"` // JSON array
+	CcAddrs         string  `json:"cc_addrs"`
+	Subject         string  `json:"subject"`
+	BodyText        string  `json:"body_text"`
+	BodyHTML        string  `json:"body_html"`
+	AttachmentsJSON string  `json:"attachments_json,omitempty"` // JSON array of Attachment objects
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	SentAt          *string `json:"sent_at,omitempty"`
+	ErrorMessage    string  `json:"error_message,omitempty"`
 }
 
 // Attachment represents a file attached to an outbound message.

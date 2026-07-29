@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luxemque/msngr/internal/audit"
 	"github.com/luxemque/msngr/internal/db"
 	"github.com/luxemque/msngr/internal/model"
 	"github.com/luxemque/msngr/internal/storage"
@@ -19,15 +20,23 @@ const maxBackoff = 5 * time.Minute
 
 // Poller periodically retrieves messages from enabled IMAP accounts.
 type Poller struct {
-	db       *db.DB
-	store    *storage.Store
-	tickMs   int
-	stopCh   chan struct{}
-	once     sync.Once
+	db     *db.DB
+	store  *storage.Store
+	audit  *audit.Logger
+	tickMs int
+	stopCh chan struct{}
+	once   sync.Once
 
 	// Per-account backoff state, keyed by account ID.
 	mu       sync.Mutex
-	backoffs map[int64]time.Duration
+	backoffs map[int64]backoffState
+}
+
+// backoffState is the current backoff for one account: how long the window is, and
+// when the account becomes eligible to be polled again.
+type backoffState struct {
+	duration time.Duration
+	retryAt  time.Time
 }
 
 // NewPoller creates a Poller that polls every tickMs milliseconds.
@@ -36,9 +45,10 @@ func NewPoller(database *db.DB, store *storage.Store, tickMs int) *Poller {
 	return &Poller{
 		db:       database,
 		store:    store,
+		audit:    audit.NewLogger(database),
 		tickMs:   tickMs,
 		stopCh:   make(chan struct{}),
-		backoffs: make(map[int64]time.Duration),
+		backoffs: make(map[int64]backoffState),
 	}
 }
 
@@ -94,33 +104,42 @@ func (p *Poller) tick() {
 	for i := range accounts {
 		acct := &accounts[i]
 
-		// Check backoff.
-		p.mu.Lock()
-		bo := p.backoffs[acct.ID]
-		p.mu.Unlock()
-
-		if bo > 0 {
-			// Still in backoff; reduce and skip.
-			p.mu.Lock()
-			p.backoffs[acct.ID] = 0 // will be re-applied on next failure
-			p.mu.Unlock()
-			slog.Debug("imap poller: skipping account (backoff)", "account_id", acct.ID, "backoff", bo)
+		if until, backoff, skip := p.inBackoff(acct.ID); skip {
+			slog.Debug("imap poller: skipping account (backoff)",
+				"account_id", acct.ID, "backoff", backoff, "retry_at", until.UTC().Format(time.RFC3339))
 			continue
 		}
 
-		if err := p.pollAccount(acct); err != nil {
-			slog.Error("imap poller: account poll failed", "account_id", acct.ID, "error", err)
+		pollErr := p.pollAccount(acct)
+		if pollErr != nil {
+			slog.Error("imap poller: account poll failed", "account_id", acct.ID, "error", pollErr)
 			p.increaseBackoff(acct.ID)
-			// Update health status to reflect failure.
-			if hErr := p.db.UpdateAccountHealth(acct.ID, "error"); hErr != nil {
-				slog.Error("imap poller: failed to update health", "account_id", acct.ID, "error", hErr)
-			}
+			p.recordHealth(acct, "error", pollErr.Error())
 		} else {
 			p.resetBackoff(acct.ID)
-			if hErr := p.db.UpdateAccountHealth(acct.ID, "ok"); hErr != nil {
-				slog.Error("imap poller: failed to update health", "account_id", acct.ID, "error", hErr)
-			}
+			p.recordHealth(acct, "ok", "")
 		}
+
+		if err := p.db.MarkAccountPolled(acct.ID); err != nil {
+			slog.Error("imap poller: failed to record poll time", "account_id", acct.ID, "error", err)
+		}
+	}
+}
+
+// recordHealth persists the observed health and audits genuine transitions.
+func (p *Poller) recordHealth(acct *model.Account, status, errMsg string) {
+	changed, previous, err := p.db.UpdateAccountHealth(acct.ID, status, errMsg)
+	if err != nil {
+		slog.Error("imap poller: failed to update health", "account_id", acct.ID, "error", err)
+		return
+	}
+	if !changed {
+		return
+	}
+	slog.Info("imap poller: account health changed",
+		"account_id", acct.ID, "email", acct.EmailAddress, "from", previous, "to", status, "error", errMsg)
+	if err := p.audit.LogAccountHealthChanged(context.Background(), "imap-poller", acct.ID, acct.EmailAddress, previous, status, errMsg); err != nil {
+		slog.Error("imap poller: failed to audit health change", "account_id", acct.ID, "error", err)
 	}
 }
 
@@ -239,6 +258,9 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 				} else {
 					msg.ArchivePath = archivePath
 					msg.StoredOnDisk = true
+					// Hash what was stored. Storage modes that keep no content leave this
+					// empty rather than presenting a hash of nothing as tamper-evidence.
+					msg.ContentHash = storage.ContentHash(content)
 				}
 			}
 		}
@@ -272,21 +294,41 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 	return nil
 }
 
+// inBackoff reports whether the account is still inside its backoff window.
+//
+// The window is held as an absolute retry time rather than a countdown: an earlier
+// implementation stored only a duration and cleared it on sight, so a persistently
+// failing account was retried every other tick forever and the doubling never took
+// effect. A broken account should get quieter, not stay loud.
+func (p *Poller) inBackoff(accountID int64) (retryAt time.Time, backoff time.Duration, skip bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	state, ok := p.backoffs[accountID]
+	if !ok {
+		return time.Time{}, 0, false
+	}
+	if time.Now().Before(state.retryAt) {
+		return state.retryAt, state.duration, true
+	}
+	return state.retryAt, state.duration, false
+}
+
 func (p *Poller) increaseBackoff(accountID int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	current := p.backoffs[accountID]
-	if current == 0 {
-		current = 1 * time.Second
+	next := p.backoffs[accountID].duration
+	if next == 0 {
+		next = 1 * time.Second
 	} else {
-		current *= 2
+		next *= 2
 	}
-	if current > maxBackoff {
-		current = maxBackoff
+	if next > maxBackoff {
+		next = maxBackoff
 	}
-	p.backoffs[accountID] = current
-	slog.Debug("imap poller: backoff increased", "account_id", accountID, "backoff", current)
+	p.backoffs[accountID] = backoffState{duration: next, retryAt: time.Now().Add(next)}
+	slog.Debug("imap poller: backoff increased", "account_id", accountID, "backoff", next)
 }
 
 func (p *Poller) resetBackoff(accountID int64) {

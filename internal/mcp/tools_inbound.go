@@ -2,10 +2,21 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 )
 
+// retrievedFolder is the only folder MSNGR polls. Anything else can only hold messages
+// that were retrieved before the folder set changed, so it is checked rather than
+// silently returning nothing.
+const retrievedFolder = "INBOX"
+
 // toolListMessages lists messages for the session's selected account in a folder.
+//
+// An empty result and an unretrievable folder are answered differently on purpose.
+// Returning nothing for both makes "no mail", "not polled yet" and "no such folder"
+// indistinguishable, and each of those invites a different next action.
 func (s *Server) toolListMessages(ctx context.Context, params map[string]interface{}) *ToolResponse {
 	session := getSession(ctx)
 	if errResp := requireAccountSelected(session); errResp != nil {
@@ -13,8 +24,38 @@ func (s *Server) toolListMessages(ctx context.Context, params map[string]interfa
 	}
 	accountID := session.SelectedAccountID
 
-	folder := paramStringDefault(params, "folder", "INBOX")
+	folder := paramStringDefault(params, "folder", retrievedFolder)
 	limit := paramIntDefault(params, "limit", 50)
+
+	acct, err := s.db.GetAccountByID(accountID)
+	if err != nil {
+		slog.Error("get account", "error", err)
+		return errorResponse("INTERNAL_ERROR", "failed to look up account")
+	}
+	if acct == nil {
+		return errorResponse("NOT_FOUND", "account not found")
+	}
+
+	known, err := s.db.ListRetrievedFolders(accountID)
+	if err != nil {
+		slog.Error("list retrieved folders", "error", err)
+		return errorResponse("INTERNAL_ERROR", "failed to list folders")
+	}
+
+	if !strings.EqualFold(folder, retrievedFolder) && !containsFold(known, folder) {
+		return &ToolResponse{
+			OK:        false,
+			ErrorCode: "FOLDER_NOT_RETRIEVED",
+			Message: fmt.Sprintf("no messages have been retrieved into folder %q; MSNGR polls %s and lists locally stored messages, "+
+				"so folders the gateway does not retrieve (including Sent) are always empty here", folder, retrievedFolder),
+			Details: map[string]interface{}{
+				"requested_folder":  folder,
+				"polled_folder":     retrievedFolder,
+				"available_folders": known,
+			},
+			Suggestion: "list " + retrievedFolder + ", or use msngr_queue_status to inspect outbound messages",
+		}
+	}
 
 	msgs, err := s.db.ListMessages(accountID, folder, limit)
 	if err != nil {
@@ -22,11 +63,36 @@ func (s *Server) toolListMessages(ctx context.Context, params map[string]interfa
 		return errorResponse("INTERNAL_ERROR", "failed to list messages")
 	}
 
+	message := fmt.Sprintf("%d message(s) in %s", len(msgs), folder)
+	if len(msgs) == 0 {
+		message = fmt.Sprintf("folder %s holds no retrieved messages", folder)
+	}
+
 	return &ToolResponse{
 		OK:      true,
-		Message: "messages retrieved",
+		Message: message,
 		Data:    msgs,
+		// Retrieval state travels beside the contents, not inside them: an empty inbox
+		// is only trustworthy if the caller can see when the gateway last looked.
+		Details: map[string]interface{}{
+			"folder":            folder,
+			"count":             len(msgs),
+			"limit":             limit,
+			"retrieval_enabled": acct.RetrievalEnabled,
+			"last_polled_at":    acct.LastPolledAt,
+			"health_status":     acct.HealthStatus,
+		},
 	}
+}
+
+// containsFold reports whether values contains target, case-insensitively.
+func containsFold(values []string, target string) bool {
+	for _, v := range values {
+		if strings.EqualFold(v, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolReadMessage reads a single message with its body.
@@ -107,7 +173,13 @@ func (s *Server) toolSearchMessages(ctx context.Context, params map[string]inter
 
 	return &ToolResponse{
 		OK:      true,
-		Message: "search complete",
+		Message: fmt.Sprintf("%d message(s) matched", len(msgs)),
 		Data:    msgs,
+		Details: map[string]interface{}{
+			"query": query,
+			"count": len(msgs),
+			"limit": limit,
+			"scope": "locally retrieved messages only",
+		},
 	}
 }

@@ -35,6 +35,8 @@ Every tool returns a JSON object with this shape:
 
 Fields are omitted when not applicable. `error_code` and `retryable` only appear on failure. `matched_rule`, `correlation_id`, and `suggestion` only appear on policy-evaluated actions.
 
+`data` and `details` carry different things. `data` is the answer to the request — the messages, the account, the queue item. `details` is context about the answer: how many results, which folder, when the account was last polled. List tools always return an array in `data`, empty when there is nothing to return; `null` is never used to mean "none".
+
 ## Error Codes
 
 | Code | Meaning |
@@ -49,6 +51,7 @@ Fields are omitted when not applicable. `error_code` and `retryable` only appear
 | `ACCOUNT_DISABLED` | Selected account is disabled |
 | `POLICY_DENIED` | Policy engine denied the action |
 | `ATTACHMENT_NOT_AVAILABLE` | Attachment not in filesystem storage |
+| `FOLDER_NOT_RETRIEVED` | Folder holds no retrieved messages; MSNGR only polls `INBOX` |
 | `INTERNAL_ERROR` | Server-side error |
 
 ## Required Workflow
@@ -148,7 +151,7 @@ List messages in a mail folder.
 | `folder` | string | no | Folder name (default: `INBOX`) |
 | `limit` | integer | no | Max messages to return (default: 50) |
 
-**Response data:** Array of message objects:
+**Response data:** Array of message objects (empty array when the folder holds nothing):
 ```json
 [{
   "id": 42,
@@ -161,12 +164,29 @@ List messages in a mail folder.
   "subject": "Hello",
   "date": "2025-01-01T12:00:00Z",
   "size": 4096,
+  "content_hash": "9f2c…",
   "direction": "inbound",
-  "stored_on_disk": false,
+  "stored_on_disk": true,
   "is_read": false,
   "is_flagged": false
 }]
 ```
+
+**Response details:** retrieval state, so an empty inbox can be judged trustworthy:
+```json
+{
+  "folder": "INBOX",
+  "count": 0,
+  "limit": 50,
+  "retrieval_enabled": true,
+  "last_polled_at": "2026-07-29T17:48:00Z",
+  "health_status": "ok"
+}
+```
+
+`content_hash` is a SHA-256 over the content stored on disk (body parts and attachments). It is absent when the account's storage mode keeps no content.
+
+**Folders.** MSNGR polls `INBOX` only and lists locally stored messages. Requesting a folder that holds no retrieved messages returns `FOLDER_NOT_RETRIEVED` with the folders that do, rather than an empty result — an empty folder, an unpolled one, and one that does not exist call for different responses. In particular there is no `Sent` folder to list: use `msngr_queue_status` for outbound messages.
 
 ---
 
@@ -263,10 +283,51 @@ Attachments are evaluated by the policy engine — forbidden file extensions (`.
 
 - **deny** — Message blocked.
   ```json
-  { "ok": false, "error_code": "POLICY_DENIED", "matched_rule": "...", "suggestion": "..." }
+  { "ok": false, "error_code": "POLICY_DENIED", "matched_rule": "...", "suggestion": "...", "correlation_id": "..." }
   ```
 
+All three outcomes return a `correlation_id`, including `deny`, so any outcome can be looked up later with `msngr_explain_decision`.
+
+**`queued` is not `sent`.** It means policy passed and the gateway will attempt delivery. Transmission happens asynchronously in the outbound queue; call `msngr_queue_status` with the returned `queue_id` to find out whether it actually went.
+
 **Pre-conditions:** Account must have `sending_enabled == true`. Agent must have `send` capability on the account.
+
+---
+
+### msngr_queue_status
+
+Check the delivery state of a previously requested send.
+
+**Auth:** Required | **Account:** Not required (scoped to accounts the agent has any permission on)
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `queue_id` | integer | yes | Queue ID returned by `msngr_request_send` |
+
+**Response data:**
+```json
+{
+  "queue_id": 10,
+  "status": "sent",
+  "means": "accepted by the SMTP server; see last_smtp_response for the server's reply",
+  "account_id": 13,
+  "correlation_id": "53a132f6-...",
+  "from": "ash@sys.lu",
+  "to": ["mike@sys.lu"],
+  "cc": [],
+  "subject": "Hello",
+  "attempts": 1,
+  "created_at": "2026-07-29T17:25:21Z",
+  "updated_at": "2026-07-29T17:25:31Z",
+  "sent_at": "2026-07-29T17:25:31Z",
+  "last_attempt_at": "2026-07-29T17:25:31Z",
+  "last_smtp_response": "250 2.0.0 Ok: queued as 4bLp2R"
+}
+```
+
+`status` is one of `draft_requested`, `validation_failed`, `queued`, `held`, `rejected`, `sending`, `sent`, `failed`, `cancelled`. `means` spells out what that implies for the caller. `last_error` appears on failure; `hold_status` and `hold_reason` appear when the message was held.
+
+A queue item belonging to an account the agent has no permission on returns `NOT_FOUND`, the same as one that does not exist.
 
 ---
 
@@ -465,6 +526,7 @@ Agent access is controlled per-account via capabilities:
 | *(any)* | `msngr_select_account` (any permission entry grants access) |
 | `send` | `msngr_request_send`, `msngr_validate_send` |
 | `download_attachment` | `msngr_download_attachment` |
+| *(any)* | `msngr_queue_status` (scoped to accounts the agent has a permission on) |
 
 `msngr_list_messages`, `msngr_read_message`, `msngr_search_messages`, `msngr_mark_message`, and `msngr_delete_message` require an account to be selected but no specific capability beyond the initial account mapping.
 
@@ -479,3 +541,21 @@ draft_requested -> queued -> sending -> sent
 ```
 
 All outbound mail passes through the queue processor. The queue runs on a configurable tick interval (`config.yaml` `ticks.queue_process_ms`, default 10 seconds).
+
+## Audit Trail for a Send
+
+Every send writes at least two audit events under one `correlation_id`, so a delivered message and a dropped one are distinguishable after the fact:
+
+| Event | When | `outcome` |
+|---|---|---|
+| `send_requested` | Policy allowed the send and it entered the queue | `accepted` — the gateway agreed to try, nothing was transmitted |
+| `message_held` | Policy held the send for review | `held` |
+| `send_denied` | Policy denied the send | `denied` |
+| `send_completed` | The SMTP server accepted the message | `success` |
+| `send_failed` | The delivery attempt failed | `error` |
+
+Request-time events record the recipients, subject and attachment count — the questions asked about a message that never arrived. Terminal events add `message_id`, `smtp_host`, `smtp_response` and `attempts`.
+
+`outcome: "accepted"` on `send_requested` is deliberately not `"success"`: at that point nothing has been sent. Only `send_completed` reports transmission.
+
+Retrieve the full trail for a message with `msngr_explain_decision` using the `correlation_id`.

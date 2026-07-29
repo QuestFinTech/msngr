@@ -54,7 +54,7 @@ type MatchedRule struct {
 
 // Engine evaluates actions through the 2-layer policy stack.
 type Engine struct {
-	db           *db.DB
+	db             *db.DB
 	hardGuardrails *HardGuardrails
 }
 

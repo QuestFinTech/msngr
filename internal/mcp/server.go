@@ -428,6 +428,24 @@ func (s *Server) registerTools(mcpServer *sdkmcp.Server) {
 		s.withAuth(s.toolValidateSend),
 	)
 
+	mcpServer.AddTool(
+		&sdkmcp.Tool{
+			Name:        "msngr_queue_status",
+			Description: "Check the delivery state of a previously requested send. Use the queue_id returned by msngr_request_send to confirm whether the message was actually transmitted, is still waiting, was held for review, or failed.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"queue_id": map[string]interface{}{
+						"type":        "integer",
+						"description": "Queue ID returned by msngr_request_send",
+					},
+				},
+				"required": []string{"queue_id"},
+			},
+		},
+		s.withAuth(s.toolQueueStatus),
+	)
+
 	// Actions
 	mcpServer.AddTool(
 		&sdkmcp.Tool{

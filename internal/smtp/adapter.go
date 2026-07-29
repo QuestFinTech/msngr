@@ -43,9 +43,16 @@ type SendRequest struct {
 
 // SendResult captures the outcome of a send attempt.
 type SendResult struct {
-	Success      bool
+	Success bool
+	// SMTPResponse is the server's verbatim reply to the end of DATA (e.g.
+	// "250 2.0.0 Ok: queued as 4bLp2R"). It is the only transport-level evidence
+	// that the message was accepted, so it is captured rather than assumed.
 	SMTPResponse string
-	Error        string
+	// MessageID is the RFC 5322 Message-ID generated for this message, without
+	// angle brackets. It is what correlates the audit record with the copy that
+	// exists on the receiving side.
+	MessageID string
+	Error     string
 }
 
 // NewClient creates a new SMTP client configuration.
@@ -113,40 +120,61 @@ func (c *Client) Send(username, password string, req *SendRequest) *SendResult {
 		}
 	}
 
-	// Compose and send message data.
-	wc, err := smtpClient.Data()
+	msg, messageID, err := composeMessage(req)
 	if err != nil {
-		return &SendResult{Error: fmt.Sprintf("data: %v", err)}
-	}
-
-	msg, err := composeMessage(req)
-	if err != nil {
-		wc.Close()
 		return &SendResult{Error: fmt.Sprintf("compose: %v", err)}
 	}
 
-	if _, err := io.WriteString(wc, msg); err != nil {
-		wc.Close()
-		return &SendResult{Error: fmt.Sprintf("write: %v", err)}
+	// Drive the DATA phase through the client's textproto connection rather than
+	// smtp.Client.Data(). The stdlib discards the server's reply to the final dot on
+	// success, and that reply ("250 2.0.0 Ok: queued as ...") is the only durable
+	// evidence of acceptance — the thing the audit trail exists to record.
+	if _, _, err := textprotoCmd(smtpClient, 354, "DATA"); err != nil {
+		return &SendResult{Error: fmt.Sprintf("data: %v", err)}
 	}
 
-	if err := wc.Close(); err != nil {
+	dw := smtpClient.Text.DotWriter()
+	if _, err := io.WriteString(dw, msg); err != nil {
+		dw.Close()
+		return &SendResult{Error: fmt.Sprintf("write: %v", err)}
+	}
+	if err := dw.Close(); err != nil {
 		return &SendResult{Error: fmt.Sprintf("close data: %v", err)}
 	}
 
+	code, resp, err := smtpClient.Text.ReadResponse(250)
+	if err != nil {
+		return &SendResult{Error: fmt.Sprintf("data response: %v", err), MessageID: messageID}
+	}
+	smtpResponse := strings.TrimSpace(fmt.Sprintf("%d %s", code, resp))
+
 	if err := smtpClient.Quit(); err != nil {
-		// Message was likely accepted; treat as success with a note.
+		// The server already accepted the message; a failed QUIT does not retract it.
 		return &SendResult{
 			Success:      true,
-			SMTPResponse: fmt.Sprintf("quit warning: %v", err),
+			SMTPResponse: fmt.Sprintf("%s (quit warning: %v)", smtpResponse, err),
+			MessageID:    messageID,
 		}
 	}
 
-	return &SendResult{Success: true, SMTPResponse: "250 OK"}
+	return &SendResult{Success: true, SMTPResponse: smtpResponse, MessageID: messageID}
 }
 
-// composeMessage builds the full RFC 5322 message with MIME headers.
-func composeMessage(req *SendRequest) (string, error) {
+// textprotoCmd issues a command on the client's textproto connection and reads the
+// expected reply, mirroring what net/smtp does internally.
+func textprotoCmd(c *smtp.Client, expectCode int, format string, args ...any) (int, string, error) {
+	id, err := c.Text.Cmd(format, args...)
+	if err != nil {
+		return 0, "", err
+	}
+	c.Text.StartResponse(id)
+	defer c.Text.EndResponse(id)
+	return c.Text.ReadResponse(expectCode)
+}
+
+// composeMessage builds the full RFC 5322 message with MIME headers, returning the
+// message text and the Message-ID it stamped on it.
+func composeMessage(req *SendRequest) (string, string, error) {
 	var buf strings.Builder
 
 	messageID := generateMessageID()
@@ -173,7 +201,7 @@ func composeMessage(req *SendRequest) (string, error) {
 
 		// Write the body as the first part.
 		if err := writeBodyPart(mw, req.Text, req.HTML); err != nil {
-			return "", err
+			return "", "", err
 		}
 
 		// Write each attachment.
@@ -188,12 +216,12 @@ func composeMessage(req *SendRequest) (string, error) {
 			attHeader.Set("Content-Transfer-Encoding", "base64")
 			part, err := mw.CreatePart(attHeader)
 			if err != nil {
-				return "", fmt.Errorf("create attachment part: %w", err)
+				return "", "", fmt.Errorf("create attachment part: %w", err)
 			}
 			// Write base64 content in 76-char lines per RFC 2045.
 			raw, err := base64.StdEncoding.DecodeString(att.ContentBase64)
 			if err != nil {
-				return "", fmt.Errorf("decode attachment base64: %w", err)
+				return "", "", fmt.Errorf("decode attachment base64: %w", err)
 			}
 			encoded := base64.StdEncoding.EncodeToString(raw)
 			for i := 0; i < len(encoded); i += 76 {
@@ -220,7 +248,7 @@ func composeMessage(req *SendRequest) (string, error) {
 		textHeader.Set("Content-Transfer-Encoding", "quoted-printable")
 		part, err := mw.CreatePart(textHeader)
 		if err != nil {
-			return "", fmt.Errorf("create text part: %w", err)
+			return "", "", fmt.Errorf("create text part: %w", err)
 		}
 		io.WriteString(part, req.Text)
 
@@ -229,7 +257,7 @@ func composeMessage(req *SendRequest) (string, error) {
 		htmlHeader.Set("Content-Transfer-Encoding", "quoted-printable")
 		part, err = mw.CreatePart(htmlHeader)
 		if err != nil {
-			return "", fmt.Errorf("create html part: %w", err)
+			return "", "", fmt.Errorf("create html part: %w", err)
 		}
 		io.WriteString(part, req.HTML)
 
@@ -244,7 +272,7 @@ func composeMessage(req *SendRequest) (string, error) {
 		buf.WriteString(req.Text)
 	}
 
-	return buf.String(), nil
+	return buf.String(), messageID, nil
 }
 
 // writeBodyPart writes the text/html body as a MIME part inside a multipart writer.

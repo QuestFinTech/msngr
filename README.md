@@ -16,7 +16,7 @@
 MSNGR mediates between MCP agents, operators (via web UI), and external mail infrastructure (IMAP/SMTP). It is not a general-purpose mail client — it is a controlled mediation layer with strong policy enforcement, auditability, and least-privilege access.
 
 - **Policy engine** — 3-layer evaluation: config safety limits → operator-defined rules → runtime controls
-- **MCP interface** — 15 tools for agents to list, read, search, send, and manage email
+- **MCP interface** — 16 tools for agents to list, read, search, send, and manage email
 - **Operator web UI** — Dashboard, mail server/account config, agent management, rule CRUD, queue/hold operations, audit trail
 - **Agent authentication** — API token auth with per-account permission scoping
 - **Safe by default** — Deny decision when no rule matches; outbound mail goes through queue, never fire-and-forget
@@ -56,6 +56,7 @@ For cross-compilation and release builds, see [docs/BUILDING.md](docs/BUILDING.m
 - **Config**: YAML bootstrap (`config.yaml`) + dynamic rules in SQLite
 - **Protocols**: IMAP (go-imap/v2), SMTP (net/smtp)
 - **Auth**: Operator login (bcrypt), Agent API tokens (SHA-256 hashed)
+- **Secrets**: Mail account credentials encrypted at rest (AES-256-GCM, scrypt-derived key from `encryption_key`)
 - **Templates**: Go html/template with embedded CSS
 
 ## Policy Model
@@ -75,7 +76,7 @@ MSNGR exposes an MCP endpoint at `POST /mcp` with Bearer token authentication.
 | Category | Tools |
 |----------|-------|
 | **Inbound** | `msngr_list_messages`, `msngr_read_message`, `msngr_search_messages` |
-| **Outbound** | `msngr_request_send`, `msngr_validate_send` |
+| **Outbound** | `msngr_request_send`, `msngr_validate_send`, `msngr_queue_status` |
 | **Actions** | `msngr_mark_message`, `msngr_delete_message`, `msngr_download_attachment` |
 | **Session** | `msngr_select_account` |
 | **Admin** | `msngr_list_holds`, `msngr_review_hold`, `msngr_explain_decision`, `msngr_list_accounts`, `msngr_test_account_connectivity` |

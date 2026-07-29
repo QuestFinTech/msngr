@@ -4,10 +4,13 @@ package storage
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,6 +27,43 @@ type MessageContent struct {
 	BodyHTML    string
 	HeadersJSON []byte // raw JSON of headers
 	Attachments []AttachmentContent
+}
+
+// ContentHash returns a SHA-256 over the content MSNGR actually stored for a message:
+// the body parts and each attachment, in a fixed order.
+//
+// It deliberately covers the stored content rather than the original RFC 5322 source,
+// which MSNGR never fetches in full. It answers "has the archive changed since it was
+// written?", not "does this match what the sender sent". Callers must leave the field
+// empty when nothing is stored — an all-zero hash presented as tamper-evidence is worse
+// than no hash, because someone will rely on it.
+func ContentHash(c *MessageContent) string {
+	if c == nil || (c.BodyText == "" && c.BodyHTML == "" && len(c.HeadersJSON) == 0 && len(c.Attachments) == 0) {
+		return ""
+	}
+
+	h := sha256.New()
+	writePart := func(label string, data []byte) {
+		// Length-prefix each part so concatenation cannot be ambiguous.
+		fmt.Fprintf(h, "%s:%d:", label, len(data))
+		h.Write(data)
+	}
+	writePart("body.txt", []byte(c.BodyText))
+	writePart("body.html", []byte(c.BodyHTML))
+	writePart("headers.json", c.HeadersJSON)
+
+	names := make([]string, 0, len(c.Attachments))
+	byName := make(map[string][]byte, len(c.Attachments))
+	for _, att := range c.Attachments {
+		names = append(names, att.Filename)
+		byName[att.Filename] = att.Data
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		writePart("attachments/"+name, byName[name])
+	}
+
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Store manages filesystem message archives.

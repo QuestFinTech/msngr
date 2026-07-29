@@ -53,13 +53,13 @@ type PageData struct {
 
 // Server handles the MSNGR web UI.
 type Server struct {
-	db         *db.DB
-	store      *storage.Store
-	audit      *audit.Logger
-	templates  map[string]*template.Template
-	addr       string
-	server     *http.Server
-	limiter    *authRateLimiter
+	db                     *db.DB
+	store                  *storage.Store
+	audit                  *audit.Logger
+	templates              map[string]*template.Template
+	addr                   string
+	server                 *http.Server
+	limiter                *authRateLimiter
 	version                string
 	hardPolicy             config.HardPolicyConfig
 	operatorSessionMinutes int
@@ -620,14 +620,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// degradedAccount names an unhealthy account and how long it has been that way,
+	// so a probe firing on this endpoint does not have to go to the UI or the journal
+	// to find out which account is broken and why.
+	type degradedAccount struct {
+		ID           int64  `json:"id"`
+		Email        string `json:"email_address"`
+		HealthStatus string `json:"health_status"`
+		Since        string `json:"since,omitempty"`
+		LastError    string `json:"last_error,omitempty"`
+		LastPolledAt string `json:"last_polled_at,omitempty"`
+	}
+
 	type healthResponse struct {
-		Status            string `json:"status"`
-		DB                string `json:"db"`
-		Accounts          int    `json:"accounts"`
-		UnhealthyAccounts int    `json:"unhealthy_accounts"`
-		QueueDepth        int    `json:"queue_depth"`
-		PendingHolds      int    `json:"pending_holds"`
-		Version           string `json:"version"`
+		Status            string            `json:"status"`
+		DB                string            `json:"db"`
+		Accounts          int               `json:"accounts"`
+		UnhealthyAccounts int               `json:"unhealthy_accounts"`
+		Degraded          []degradedAccount `json:"degraded,omitempty"`
+		QueueDepth        int               `json:"queue_depth"`
+		PendingHolds      int               `json:"pending_holds"`
+		Version           string            `json:"version"`
 	}
 
 	resp := healthResponse{
@@ -658,12 +671,22 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check unhealthy accounts.
-	unhealthy, err := s.db.GetUnhealthyAccountCount()
+	unhealthyAccounts, err := s.db.ListUnhealthyAccounts()
 	if err != nil {
 		slog.Error("health check unhealthy accounts", "error", err)
 	} else {
-		resp.UnhealthyAccounts = unhealthy
-		if unhealthy > 0 {
+		resp.UnhealthyAccounts = len(unhealthyAccounts)
+		for _, a := range unhealthyAccounts {
+			resp.Degraded = append(resp.Degraded, degradedAccount{
+				ID:           a.ID,
+				Email:        a.EmailAddress,
+				HealthStatus: a.HealthStatus,
+				Since:        a.HealthChangedAt,
+				LastError:    a.HealthError,
+				LastPolledAt: a.LastPolledAt,
+			})
+		}
+		if len(unhealthyAccounts) > 0 {
 			resp.Status = "degraded"
 		}
 	}
@@ -827,11 +850,11 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 					} else {
 						pd.Success = result
 						// Update health status based on test result.
+						status, detail := "ok", ""
 						if strings.Contains(result, "FAILED") {
-							_ = s.db.UpdateAccountHealth(accountID, "error")
-						} else {
-							_ = s.db.UpdateAccountHealth(accountID, "ok")
+							status, detail = "error", result
 						}
+						s.recordAccountHealth(r, accountID, acct.EmailAddress, status, detail)
 					}
 				}
 			case "edit":
@@ -926,6 +949,26 @@ func (s *Server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, r, "accounts.html", pd)
+}
+
+// recordAccountHealth stores an observed health status and audits it if it changed,
+// so an operator-run connectivity test leaves the same trail as a poller observation.
+func (s *Server) recordAccountHealth(r *http.Request, accountID int64, email, status, detail string) {
+	changed, previous, err := s.db.UpdateAccountHealth(accountID, status, detail)
+	if err != nil {
+		slog.Error("update account health", "account_id", accountID, "error", err)
+		return
+	}
+	if !changed {
+		return
+	}
+	actor := "operator"
+	if op := s.currentOperator(r); op != nil {
+		actor = fmt.Sprintf("%d", op.ID)
+	}
+	if err := s.audit.LogAccountHealthChanged(r.Context(), actor, accountID, email, previous, status, detail); err != nil {
+		slog.Error("audit account health change", "account_id", accountID, "error", err)
+	}
 }
 
 // testServerConnectivity tests TCP connectivity to a mail server's IMAP and SMTP ports.

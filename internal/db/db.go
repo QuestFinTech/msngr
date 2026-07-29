@@ -8,13 +8,16 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/luxemque/msngr/internal/model"
+	"github.com/luxemque/msngr/internal/secret"
 
 	_ "modernc.org/sqlite"
 )
@@ -22,9 +25,15 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// credentialSaltKey is the system_settings key holding this deployment's KDF salt.
+const credentialSaltKey = "credential_kdf_salt"
+
 // DB wraps a SQLite database connection.
 type DB struct {
 	conn *sql.DB
+	// crypter encrypts account credentials at rest. Nil when no encryption key is
+	// configured, in which case credentials are stored as they always were.
+	crypter *secret.Crypter
 }
 
 // Open creates a new database connection and configures SQLite pragmas.
@@ -65,7 +74,27 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-// scanAccount scans a row from the 18-column account query (with server JOIN).
+// accountColumns is the canonical account projection. Every account query selects
+// exactly these columns in this order, so scanAccount stays the single place the
+// account row shape is written down. Adding a column here means adding one field
+// to scanAccount and nowhere else.
+const accountColumns = `a.id, a.name, a.email_address,
+	        COALESCE(a.server_id, 0),
+	        COALESCE(ms.name, ''),
+	        COALESCE(ms.smtp_host, ''), COALESCE(ms.smtp_port, 0), COALESCE(ms.smtp_tls, 1),
+	        COALESCE(ms.imap_host, ''), COALESCE(ms.imap_port, 0), COALESCE(ms.imap_tls, 1),
+	        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
+	        COALESCE(a.storage_mode, 'metadata'), a.enabled,
+	        COALESCE(a.health_status, 'unknown'), COALESCE(a.health_changed_at, ''),
+	        COALESCE(a.health_error, ''), COALESCE(a.last_polled_at, ''),
+	        a.created_at, a.updated_at`
+
+// accountFrom is the FROM/JOIN clause the canonical projection is valid against.
+const accountFrom = `
+	 FROM accounts a
+	 LEFT JOIN mail_servers ms ON ms.id = a.server_id`
+
+// scanAccount scans one row of the canonical account projection (accountColumns).
 func scanAccount(s scanner) (model.Account, error) {
 	var a model.Account
 	err := s.Scan(
@@ -74,7 +103,8 @@ func scanAccount(s scanner) (model.Account, error) {
 		&a.SMTPHost, &a.SMTPPort, &a.SMTPTLS,
 		&a.IMAPHost, &a.IMAPPort, &a.IMAPTLS,
 		&a.RetrievalEnabled, &a.SendingEnabled, &a.DeleteAfterRetrieval, &a.StorageMode,
-		&a.Enabled, &a.HealthStatus, &a.CreatedAt, &a.UpdatedAt,
+		&a.Enabled, &a.HealthStatus, &a.HealthChangedAt, &a.HealthError, &a.LastPolledAt,
+		&a.CreatedAt, &a.UpdatedAt,
 	)
 	return a, err
 }
@@ -139,16 +169,58 @@ func (db *DB) InitSchema() error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
-		if _, err := db.conn.Exec(string(mData)); err != nil {
-			slog.Warn("Migration already applied or skipped", "file", name, "error", err)
-		} else {
-			slog.Info("Applied migration", "file", name)
+		if err := db.applyMigration(name, string(mData)); err != nil {
+			return err
 		}
-		// Record it either way so we don't retry.
-		db.conn.Exec("INSERT OR IGNORE INTO migrations (filename) VALUES (?)", name)
+		slog.Info("Applied migration", "file", name)
+		if _, err := db.conn.Exec("INSERT OR IGNORE INTO migrations (filename) VALUES (?)", name); err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
 	}
 
 	slog.Info("Database schema applied")
+	return nil
+}
+
+// stripSQLComments removes whole-line "--" comments and blank lines.
+//
+// It runs before statements are split, not after: prose in a comment may contain a
+// semicolon, and splitting first would cut the comment in half and leave the tail
+// looking like SQL.
+func stripSQLComments(body string) string {
+	var kept []string
+	for _, line := range strings.Split(body, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// applyMigration executes a migration file one statement at a time.
+//
+// Statements are run individually so a failure names the statement that failed.
+// "duplicate column name" is treated as already-applied — an ALTER TABLE ADD COLUMN
+// that ran against a database whose migrations row was lost is a no-op, not an error.
+// Every other failure is fatal: recording a migration as applied when it was not
+// leaves the schema missing columns that later queries assume exist.
+//
+// Statements are separated on ";", so a migration must not contain a semicolon inside
+// a string literal or a trigger body. Nothing here needs one.
+func (db *DB) applyMigration(name, body string) error {
+	for _, chunk := range strings.Split(stripSQLComments(body), ";") {
+		stmt := strings.TrimSpace(chunk)
+		if stmt == "" {
+			continue
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+				slog.Debug("Migration statement already applied", "file", name, "error", err)
+				continue
+			}
+			return fmt.Errorf("apply migration %s: %w", name, err)
+		}
+	}
 	return nil
 }
 
@@ -237,12 +309,12 @@ func (db *DB) GetSystemSetting(key string) (string, error) {
 
 // DashboardStats holds counts for the dashboard.
 type DashboardStats struct {
-	Accounts    int
-	Agents      int
-	QueueDepth  int
+	Accounts     int
+	Agents       int
+	QueueDepth   int
 	PendingHolds int
-	AuditEvents int
-	Rules       int
+	AuditEvents  int
+	Rules        int
 }
 
 // GetDashboardStats returns aggregate counts for the dashboard.
@@ -281,7 +353,7 @@ func (db *DB) GetEnabledRules(ctx context.Context) ([]model.Rule, error) {
 	}
 	defer rows.Close()
 
-	var rules []model.Rule
+	rules := []model.Rule{}
 	for rows.Next() {
 		r, err := scanRule(rows)
 		if err != nil {
@@ -321,7 +393,7 @@ func (db *DB) GetQueuedItems(limit int) ([]model.OutboundItem, error) {
 	}
 	defer rows.Close()
 
-	var items []model.OutboundItem
+	items := []model.OutboundItem{}
 	for rows.Next() {
 		var item model.OutboundItem
 		if err := rows.Scan(
@@ -395,10 +467,73 @@ func (db *DB) InsertDeliveryAttempt(queueID int64, success bool, errMsg, smtpRes
 	return err
 }
 
+// QueueItemStatus is the delivery state of one outbound item, joined with the outcome
+// of its most recent delivery attempt.
+type QueueItemStatus struct {
+	model.OutboundItem
+	Attempts         int    `json:"attempts"`
+	LastAttemptAt    string `json:"last_attempt_at,omitempty"`
+	LastSMTPResponse string `json:"last_smtp_response,omitempty"`
+	HoldStatus       string `json:"hold_status,omitempty"`
+	HoldReason       string `json:"hold_reason,omitempty"`
+}
+
+// GetQueueItemForAgent returns the status of a queue item, but only if the item
+// belongs to an account the agent holds some permission on. Delivery state is
+// account-scoped for the same reason message content is.
+func (db *DB) GetQueueItemForAgent(ctx context.Context, queueID, agentID int64) (*QueueItemStatus, error) {
+	var s QueueItemStatus
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT q.id, q.account_id, q.agent_id, q.correlation_id, q.status, q.from_addr,
+		        q.to_addrs, COALESCE(q.cc_addrs, ''), q.subject,
+		        COALESCE(q.body_text, ''), COALESCE(q.body_html, ''),
+		        COALESCE(q.attachments_json, ''),
+		        q.created_at, q.updated_at, q.sent_at, COALESCE(q.error_message, ''),
+		        (SELECT COUNT(*) FROM delivery_attempts da WHERE da.queue_id = q.id),
+		        COALESCE((SELECT da.attempted_at FROM delivery_attempts da
+		                  WHERE da.queue_id = q.id ORDER BY da.id DESC LIMIT 1), ''),
+		        COALESCE((SELECT da.smtp_response FROM delivery_attempts da
+		                  WHERE da.queue_id = q.id ORDER BY da.id DESC LIMIT 1), ''),
+		        COALESCE((SELECT h.status FROM holds h
+		                  WHERE h.queue_id = q.id ORDER BY h.id DESC LIMIT 1), ''),
+		        COALESCE((SELECT h.reason FROM holds h
+		                  WHERE h.queue_id = q.id ORDER BY h.id DESC LIMIT 1), '')
+		 FROM outbound_queue q
+		 WHERE q.id = ?
+		   AND EXISTS (SELECT 1 FROM agent_permissions ap
+		               WHERE ap.agent_id = ? AND ap.account_id = q.account_id)`,
+		queueID, agentID,
+	).Scan(
+		&s.ID, &s.AccountID, &s.AgentID, &s.CorrelationID, &s.Status, &s.FromAddr,
+		&s.ToAddrs, &s.CcAddrs, &s.Subject,
+		&s.BodyText, &s.BodyHTML, &s.AttachmentsJSON,
+		&s.CreatedAt, &s.UpdatedAt, &s.SentAt, &s.ErrorMessage,
+		&s.Attempts, &s.LastAttemptAt, &s.LastSMTPResponse, &s.HoldStatus, &s.HoldReason,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get queue item %d for agent %d: %w", queueID, agentID, err)
+	}
+	return &s, nil
+}
+
+// CountDeliveryAttempts returns how many delivery attempts have been recorded for a
+// queue item, including the one that just finished.
+func (db *DB) CountDeliveryAttempts(queueID int64) (int, error) {
+	var count int
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM delivery_attempts WHERE queue_id = ?", queueID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count delivery attempts for queue %d: %w", queueID, err)
+	}
+	return count, nil
+}
+
 // InsertHold creates a new hold record for a queued item.
 func (db *DB) InsertHold(queueID, ruleID int64, reason string) error {
 	_, err := db.conn.Exec(
-		"INSERT INTO holds (queue_id, rule_id, reason) VALUES (?, ?, ?)",
+		"INSERT INTO holds (queue_id, rule_id, reason) VALUES (?, NULLIF(?, 0), ?)",
 		queueID, ruleID, reason,
 	)
 	return err
@@ -424,14 +559,22 @@ func (db *DB) GetQueueIDFromHold(holdID int64) (int64, error) {
 	return queueID, nil
 }
 
-// GetAccountCredentials returns the username and password for an account.
+// GetAccountCredentials returns the decrypted username and password for an account.
 func (db *DB) GetAccountCredentials(accountID int64) (username, password string, err error) {
+	var usernameEnc, passwordEnc string
 	err = db.conn.QueryRow(
 		"SELECT username_enc, password_enc FROM account_credentials WHERE account_id = ?",
 		accountID,
-	).Scan(&username, &password)
+	).Scan(&usernameEnc, &passwordEnc)
 	if err != nil {
 		return "", "", fmt.Errorf("get credentials for account %d: %w", accountID, err)
+	}
+
+	if username, err = db.openCredential(usernameEnc); err != nil {
+		return "", "", fmt.Errorf("account %d username: %w", accountID, err)
+	}
+	if password, err = db.openCredential(passwordEnc); err != nil {
+		return "", "", fmt.Errorf("account %d password: %w", accountID, err)
 	}
 	return username, password, nil
 }
@@ -439,20 +582,7 @@ func (db *DB) GetAccountCredentials(accountID int64) (username, password string,
 // GetAccountByID returns an account by its ID, joining mail_servers for connection details.
 func (db *DB) GetAccountByID(accountID int64) (*model.Account, error) {
 	row := db.conn.QueryRow(
-		`SELECT a.id, a.name, a.email_address,
-		        COALESCE(a.server_id, 0),
-		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, ''),
-		        COALESCE(ms.smtp_port, 0),
-		        COALESCE(ms.smtp_tls, 1),
-		        COALESCE(ms.imap_host, ''),
-		        COALESCE(ms.imap_port, 0),
-		        COALESCE(ms.imap_tls, 1),
-		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
-		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
-		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
-		 FROM accounts a
-		 LEFT JOIN mail_servers ms ON ms.id = a.server_id
+		`SELECT `+accountColumns+accountFrom+`
 		 WHERE a.id = ?`,
 		accountID,
 	)
@@ -471,27 +601,14 @@ func (db *DB) GetAccountByID(accountID int64) (*model.Account, error) {
 // GetEnabledRetrievalAccounts returns all accounts where enabled=1 AND retrieval_enabled=1.
 func (db *DB) GetEnabledRetrievalAccounts() ([]model.Account, error) {
 	rows, err := db.conn.Query(
-		`SELECT a.id, a.name, a.email_address,
-		        COALESCE(a.server_id, 0),
-		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, ''),
-		        COALESCE(ms.smtp_port, 0),
-		        COALESCE(ms.smtp_tls, 1),
-		        COALESCE(ms.imap_host, ''),
-		        COALESCE(ms.imap_port, 0),
-		        COALESCE(ms.imap_tls, 1),
-		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
-		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
-		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
-		 FROM accounts a
-		 LEFT JOIN mail_servers ms ON ms.id = a.server_id
+		`SELECT ` + accountColumns + accountFrom + `
 		 WHERE a.enabled = 1 AND a.retrieval_enabled = 1`)
 	if err != nil {
 		return nil, fmt.Errorf("query enabled retrieval accounts: %w", err)
 	}
 	defer rows.Close()
 
-	var accounts []model.Account
+	accounts := []model.Account{}
 	for rows.Next() {
 		a, err := scanAccount(rows)
 		if err != nil {
@@ -554,7 +671,6 @@ func (db *DB) Ping() error {
 	return db.conn.Ping()
 }
 
-
 // --- Audit event queries ---
 
 // InsertAuditEvent inserts a new audit event and returns its ID.
@@ -597,7 +713,7 @@ func (db *DB) ExportAuditEvents(since, until string) ([]model.AuditEvent, error)
 	}
 	defer rows.Close()
 
-	var events []model.AuditEvent
+	events := []model.AuditEvent{}
 	for rows.Next() {
 		e, err := scanAuditEvent(rows)
 		if err != nil {
@@ -615,17 +731,83 @@ func (db *DB) GetUnhealthyAccountCount() (int, error) {
 	return count, err
 }
 
-// UpdateAccountHealth updates the health_status and updated_at for an account.
-func (db *DB) UpdateAccountHealth(accountID int64, status string) error {
-	now := nowUTC()
-	_, err := db.conn.Exec(
-		"UPDATE accounts SET health_status = ?, updated_at = ? WHERE id = ?",
-		status, now, accountID,
-	)
+// UpdateAccountHealth records an observed health status for an account and reports
+// whether that status changed.
+//
+// The write is conditional on purpose. An unconditional UPDATE on every poll makes
+// updated_at a "last polled" timestamp wearing the name of a "last changed" one, which
+// is precisely backwards during an outage: the row looks freshly maintained while the
+// account has not authenticated in weeks. Only a real transition touches
+// health_status/health_changed_at/updated_at; health_error is refreshed whenever it
+// differs so the latest reason is available without inventing a transition.
+//
+// The returned previous status is "" when the account does not exist.
+func (db *DB) UpdateAccountHealth(accountID int64, status, errMsg string) (changed bool, previous string, err error) {
+	var currentStatus, currentErr string
+	err = db.conn.QueryRow(
+		"SELECT COALESCE(health_status, 'unknown'), COALESCE(health_error, '') FROM accounts WHERE id = ?",
+		accountID,
+	).Scan(&currentStatus, &currentErr)
+	if err == sql.ErrNoRows {
+		return false, "", nil
+	}
 	if err != nil {
-		return fmt.Errorf("update account health: %w", err)
+		return false, "", fmt.Errorf("read account health %d: %w", accountID, err)
+	}
+
+	if currentStatus == status {
+		if currentErr == errMsg {
+			return false, currentStatus, nil
+		}
+		// Same status, new detail — refresh the reason without claiming a transition.
+		if _, err := db.conn.Exec("UPDATE accounts SET health_error = ? WHERE id = ?", errMsg, accountID); err != nil {
+			return false, currentStatus, fmt.Errorf("update account health detail %d: %w", accountID, err)
+		}
+		return false, currentStatus, nil
+	}
+
+	now := nowUTC()
+	if _, err := db.conn.Exec(
+		"UPDATE accounts SET health_status = ?, health_error = ?, health_changed_at = ?, updated_at = ? WHERE id = ?",
+		status, errMsg, now, now, accountID,
+	); err != nil {
+		return false, currentStatus, fmt.Errorf("update account health %d: %w", accountID, err)
+	}
+	return true, currentStatus, nil
+}
+
+// MarkAccountPolled records that a poll ran against the account, regardless of outcome.
+// This is the write that used to land on updated_at.
+func (db *DB) MarkAccountPolled(accountID int64) error {
+	_, err := db.conn.Exec("UPDATE accounts SET last_polled_at = ? WHERE id = ?", nowUTC(), accountID)
+	if err != nil {
+		return fmt.Errorf("mark account polled %d: %w", accountID, err)
 	}
 	return nil
+}
+
+// ListUnhealthyAccounts returns the enabled accounts whose health is neither ok nor
+// unknown, so a caller can report which account is degraded and since when instead of
+// only how many are.
+func (db *DB) ListUnhealthyAccounts() ([]model.Account, error) {
+	rows, err := db.conn.Query(
+		`SELECT ` + accountColumns + accountFrom + `
+		 WHERE a.enabled = 1 AND COALESCE(a.health_status, 'unknown') NOT IN ('ok', 'unknown')
+		 ORDER BY a.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list unhealthy accounts: %w", err)
+	}
+	defer rows.Close()
+
+	accounts := []model.Account{}
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan unhealthy account: %w", err)
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
 }
 
 // --- MCP query methods ---
@@ -649,7 +831,7 @@ func (db *DB) ListMessages(accountID int64, folder string, limit int) ([]model.M
 	}
 	defer rows.Close()
 
-	var msgs []model.Message
+	msgs := []model.Message{}
 	for rows.Next() {
 		m, err := scanMessage(rows)
 		if err != nil {
@@ -658,6 +840,30 @@ func (db *DB) ListMessages(accountID int64, folder string, limit int) ([]model.M
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()
+}
+
+// ListRetrievedFolders returns the folders that actually hold retrieved messages for
+// an account, so a caller can tell "this folder is empty" from "nothing was ever
+// retrieved into this folder".
+func (db *DB) ListRetrievedFolders(accountID int64) ([]string, error) {
+	rows, err := db.conn.Query(
+		"SELECT DISTINCT COALESCE(folder, 'INBOX') FROM messages WHERE account_id = ? ORDER BY 1",
+		accountID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list retrieved folders: %w", err)
+	}
+	defer rows.Close()
+
+	folders := []string{}
+	for rows.Next() {
+		var folder string
+		if err := rows.Scan(&folder); err != nil {
+			return nil, fmt.Errorf("scan folder: %w", err)
+		}
+		folders = append(folders, folder)
+	}
+	return folders, rows.Err()
 }
 
 // GetMessage returns a single message by account and message row ID.
@@ -703,7 +909,7 @@ func (db *DB) SearchMessages(accountID int64, query string, limit int) ([]model.
 	}
 	defer rows.Close()
 
-	var msgs []model.Message
+	msgs := []model.Message{}
 	for rows.Next() {
 		m, err := scanMessage(rows)
 		if err != nil {
@@ -762,7 +968,7 @@ func (db *DB) UpdateMessageFlag(messageID int64, flag string) error {
 // ListHolds returns holds with the given status.
 func (db *DB) ListHolds(status string) ([]model.Hold, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, queue_id, rule_id, reason, status, reviewer_id, reviewed_at, created_at
+		`SELECT id, queue_id, COALESCE(rule_id, 0), reason, status, reviewer_id, reviewed_at, created_at
 		 FROM holds
 		 WHERE status = ?
 		 ORDER BY created_at DESC`,
@@ -773,7 +979,7 @@ func (db *DB) ListHolds(status string) ([]model.Hold, error) {
 	}
 	defer rows.Close()
 
-	var holds []model.Hold
+	holds := []model.Hold{}
 	for rows.Next() {
 		var h model.Hold
 		if err := rows.Scan(&h.ID, &h.QueueID, &h.RuleID, &h.Reason, &h.Status, &h.ReviewerID, &h.ReviewedAt, &h.CreatedAt); err != nil {
@@ -787,20 +993,7 @@ func (db *DB) ListHolds(status string) ([]model.Hold, error) {
 // ListAccounts returns all accounts.
 func (db *DB) ListAccounts() ([]model.Account, error) {
 	rows, err := db.conn.Query(
-		`SELECT a.id, a.name, a.email_address,
-		        COALESCE(a.server_id, 0),
-		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, ''),
-		        COALESCE(ms.smtp_port, 0),
-		        COALESCE(ms.smtp_tls, 1),
-		        COALESCE(ms.imap_host, ''),
-		        COALESCE(ms.imap_port, 0),
-		        COALESCE(ms.imap_tls, 1),
-		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
-		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
-		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
-		 FROM accounts a
-		 LEFT JOIN mail_servers ms ON ms.id = a.server_id
+		`SELECT ` + accountColumns + accountFrom + `
 		 ORDER BY a.id ASC`,
 	)
 	if err != nil {
@@ -808,7 +1001,7 @@ func (db *DB) ListAccounts() ([]model.Account, error) {
 	}
 	defer rows.Close()
 
-	var accounts []model.Account
+	accounts := []model.Account{}
 	for rows.Next() {
 		a, err := scanAccount(rows)
 		if err != nil {
@@ -834,7 +1027,7 @@ func (db *DB) GetAuditByCorrelation(correlationID string) ([]model.AuditEvent, e
 	}
 	defer rows.Close()
 
-	var events []model.AuditEvent
+	events := []model.AuditEvent{}
 	for rows.Next() {
 		e, err := scanAuditEvent(rows)
 		if err != nil {
@@ -909,7 +1102,7 @@ func (db *DB) ListMailServers() ([]model.MailServer, error) {
 	}
 	defer rows.Close()
 
-	var servers []model.MailServer
+	servers := []model.MailServer{}
 	for rows.Next() {
 		var s model.MailServer
 		if err := rows.Scan(
@@ -1003,7 +1196,7 @@ func (db *DB) ListAgents() ([]model.Agent, error) {
 	}
 	defer rows.Close()
 
-	var agents []model.Agent
+	agents := []model.Agent{}
 	for rows.Next() {
 		var a model.Agent
 		if err := rows.Scan(&a.ID, &a.AgentEmail, &a.DisplayName, &a.Enabled, &a.CreatedAt, &a.UpdatedAt); err != nil {
@@ -1097,7 +1290,7 @@ func (db *DB) ListRules() ([]model.Rule, error) {
 	}
 	defer rows.Close()
 
-	var rules []model.Rule
+	rules := []model.Rule{}
 	for rows.Next() {
 		r, err := scanRule(rows)
 		if err != nil {
@@ -1203,7 +1396,7 @@ func (db *DB) ListQueueItems(status string, limit int) ([]model.OutboundItem, er
 	}
 	defer rows.Close()
 
-	var items []model.OutboundItem
+	items := []model.OutboundItem{}
 	for rows.Next() {
 		var item model.OutboundItem
 		if err := rows.Scan(
@@ -1224,11 +1417,11 @@ func (db *DB) ListAllHolds(status string) ([]model.Hold, error) {
 	var query string
 	var args []interface{}
 	if status != "" {
-		query = `SELECT id, queue_id, rule_id, reason, status, reviewer_id, reviewed_at, created_at
+		query = `SELECT id, queue_id, COALESCE(rule_id, 0), reason, status, reviewer_id, reviewed_at, created_at
 		         FROM holds WHERE status = ? ORDER BY created_at DESC`
 		args = []interface{}{status}
 	} else {
-		query = `SELECT id, queue_id, rule_id, reason, status, reviewer_id, reviewed_at, created_at
+		query = `SELECT id, queue_id, COALESCE(rule_id, 0), reason, status, reviewer_id, reviewed_at, created_at
 		         FROM holds ORDER BY created_at DESC`
 	}
 
@@ -1238,7 +1431,7 @@ func (db *DB) ListAllHolds(status string) ([]model.Hold, error) {
 	}
 	defer rows.Close()
 
-	var holds []model.Hold
+	holds := []model.Hold{}
 	for rows.Next() {
 		var h model.Hold
 		if err := rows.Scan(&h.ID, &h.QueueID, &h.RuleID, &h.Reason, &h.Status, &h.ReviewerID, &h.ReviewedAt, &h.CreatedAt); err != nil {
@@ -1291,7 +1484,7 @@ func (db *DB) ListFilteredAuditEvents(actorType, action, fromDate, toDate string
 	}
 	defer rows.Close()
 
-	var events []model.AuditEvent
+	events := []model.AuditEvent{}
 	for rows.Next() {
 		e, err := scanAuditEvent(rows)
 		if err != nil {
@@ -1302,16 +1495,176 @@ func (db *DB) ListFilteredAuditEvents(actorType, action, fromDate, toDate string
 	return events, total, rows.Err()
 }
 
-// SaveAccountCredentials inserts or updates credentials for an account.
+// SaveAccountCredentials inserts or updates credentials for an account, encrypting
+// them when an encryption key is configured.
 func (db *DB) SaveAccountCredentials(accountID int64, username, password string) error {
+	usernameEnc, err := db.sealCredential(username)
+	if err != nil {
+		return err
+	}
+	passwordEnc, err := db.sealCredential(password)
+	if err != nil {
+		return err
+	}
+
 	now := nowUTC()
-	_, err := db.conn.Exec(
+	_, err = db.conn.Exec(
 		`INSERT INTO account_credentials (account_id, username_enc, password_enc, updated_at)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(account_id) DO UPDATE SET username_enc = excluded.username_enc, password_enc = excluded.password_enc, updated_at = excluded.updated_at`,
-		accountID, username, password, now,
+		accountID, usernameEnc, passwordEnc, now,
 	)
 	return err
+}
+
+// EnableCredentialEncryption derives the credential encryption key for this process.
+// Without it the credential columns hold cleartext, which is what the columns' _enc
+// suffix promised and did not deliver before this existed.
+func (db *DB) EnableCredentialEncryption(key string) error {
+	salt, err := db.credentialSalt()
+	if err != nil {
+		return err
+	}
+	crypter, err := secret.NewCrypter(key, salt)
+	if err != nil {
+		return fmt.Errorf("enable credential encryption: %w", err)
+	}
+	db.crypter = crypter
+	return nil
+}
+
+// CredentialEncryptionEnabled reports whether credentials are being encrypted at rest.
+func (db *DB) CredentialEncryptionEnabled() bool {
+	return db.crypter != nil
+}
+
+// credentialSalt returns the deployment's KDF salt, creating it on first use. The salt
+// is not secret; it lives beside the data so the key material does not have to.
+func (db *DB) credentialSalt() ([]byte, error) {
+	stored, err := db.GetSystemSetting(credentialSaltKey)
+	if err != nil {
+		return nil, fmt.Errorf("read credential salt: %w", err)
+	}
+	if stored != "" {
+		salt, err := base64.StdEncoding.DecodeString(stored)
+		if err != nil {
+			return nil, fmt.Errorf("decode credential salt: %w", err)
+		}
+		if len(salt) != secret.SaltLen {
+			return nil, fmt.Errorf("stored credential salt is %d bytes, expected %d", len(salt), secret.SaltLen)
+		}
+		return salt, nil
+	}
+
+	salt, err := secret.NewSalt()
+	if err != nil {
+		return nil, err
+	}
+	if err := db.SetSystemSetting(credentialSaltKey, base64.StdEncoding.EncodeToString(salt)); err != nil {
+		return nil, fmt.Errorf("store credential salt: %w", err)
+	}
+	return salt, nil
+}
+
+// sealCredential encrypts a value when encryption is enabled, and passes it through
+// otherwise so a deployment without a configured key keeps working.
+func (db *DB) sealCredential(value string) (string, error) {
+	if db.crypter == nil {
+		return value, nil
+	}
+	sealed, err := db.crypter.Encrypt(value)
+	if err != nil {
+		return "", fmt.Errorf("encrypt credential: %w", err)
+	}
+	return sealed, nil
+}
+
+// openCredential reverses sealCredential. A stored value that is not ciphertext is
+// legacy cleartext and is returned as-is.
+func (db *DB) openCredential(stored string) (string, error) {
+	if !secret.IsCiphertext(stored) {
+		return stored, nil
+	}
+	if db.crypter == nil {
+		return "", errors.New("credential is encrypted but no encryption_key is configured")
+	}
+	return db.crypter.Decrypt(stored)
+}
+
+// CountPlaintextCredentials returns how many accounts still have credentials stored
+// in cleartext.
+func (db *DB) CountPlaintextCredentials() (int, error) {
+	rows, err := db.conn.Query("SELECT username_enc, password_enc FROM account_credentials")
+	if err != nil {
+		return 0, fmt.Errorf("count plaintext credentials: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var username, password string
+		if err := rows.Scan(&username, &password); err != nil {
+			return 0, fmt.Errorf("scan credential row: %w", err)
+		}
+		if !secret.IsCiphertext(username) || !secret.IsCiphertext(password) {
+			count++
+		}
+	}
+	return count, rows.Err()
+}
+
+// ReencryptPlaintextCredentials rewrites any credential rows still held in cleartext.
+// It is a no-op when encryption is disabled or every row is already encrypted, and it
+// returns the number of accounts it converted.
+func (db *DB) ReencryptPlaintextCredentials() (int, error) {
+	if db.crypter == nil {
+		return 0, nil
+	}
+
+	rows, err := db.conn.Query("SELECT account_id, username_enc, password_enc FROM account_credentials")
+	if err != nil {
+		return 0, fmt.Errorf("scan credentials for re-encryption: %w", err)
+	}
+
+	type row struct {
+		accountID          int64
+		username, password string
+	}
+	var pending []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.accountID, &r.username, &r.password); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan credential row: %w", err)
+		}
+		if secret.IsCiphertext(r.username) && secret.IsCiphertext(r.password) {
+			continue
+		}
+		pending = append(pending, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate credential rows: %w", err)
+	}
+
+	converted := 0
+	for _, r := range pending {
+		// Re-seal both columns from their current plaintext. openCredential handles the
+		// mixed case where one column was already converted by an interrupted run.
+		username, err := db.openCredential(r.username)
+		if err != nil {
+			return converted, fmt.Errorf("account %d: %w", r.accountID, err)
+		}
+		password, err := db.openCredential(r.password)
+		if err != nil {
+			return converted, fmt.Errorf("account %d: %w", r.accountID, err)
+		}
+		if err := db.SaveAccountCredentials(r.accountID, username, password); err != nil {
+			return converted, fmt.Errorf("re-encrypt credentials for account %d: %w", r.accountID, err)
+		}
+		converted++
+	}
+	return converted, nil
 }
 
 func boolToInt(b bool) int {
@@ -1371,7 +1724,7 @@ func (db *DB) ListAgentPermissions(agentID int64) ([]model.AgentPermission, erro
 		return nil, fmt.Errorf("list agent permissions: %w", err)
 	}
 	defer rows.Close()
-	var perms []model.AgentPermission
+	perms := []model.AgentPermission{}
 	for rows.Next() {
 		var p model.AgentPermission
 		if err := rows.Scan(&p.ID, &p.AgentID, &p.AccountID, &p.Capability); err != nil {
@@ -1385,20 +1738,7 @@ func (db *DB) ListAgentPermissions(agentID int64) ([]model.AgentPermission, erro
 // GetAccountByEmail returns the account whose email_address matches exactly, or nil if none.
 func (db *DB) GetAccountByEmail(emailAddress string) (*model.Account, error) {
 	row := db.conn.QueryRow(
-		`SELECT a.id, a.name, a.email_address,
-		        COALESCE(a.server_id, 0),
-		        COALESCE(ms.name, ''),
-		        COALESCE(ms.smtp_host, ''),
-		        COALESCE(ms.smtp_port, 0),
-		        COALESCE(ms.smtp_tls, 1),
-		        COALESCE(ms.imap_host, ''),
-		        COALESCE(ms.imap_port, 0),
-		        COALESCE(ms.imap_tls, 1),
-		        a.retrieval_enabled, a.sending_enabled, COALESCE(a.delete_after_retrieval, 0),
-		        COALESCE(a.storage_mode, 'metadata'), a.enabled,
-		        COALESCE(a.health_status, 'unknown'), a.created_at, a.updated_at
-		 FROM accounts a
-		 LEFT JOIN mail_servers ms ON ms.id = a.server_id
+		`SELECT `+accountColumns+accountFrom+`
 		 WHERE a.email_address = ?`,
 		emailAddress,
 	)
@@ -1481,7 +1821,7 @@ func (db *DB) ListTokensForAgent(agentID int64) ([]model.AgentToken, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var tokens []model.AgentToken
+	tokens := []model.AgentToken{}
 	for rows.Next() {
 		var t model.AgentToken
 		if err := rows.Scan(&t.ID, &t.AgentID, &t.Enabled, &t.CreatedAt, &t.LastUsedAt); err != nil {
@@ -1502,7 +1842,7 @@ func (db *DB) ListAllTokens() ([]model.AgentToken, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var tokens []model.AgentToken
+	tokens := []model.AgentToken{}
 	for rows.Next() {
 		var t model.AgentToken
 		if err := rows.Scan(&t.ID, &t.AgentID, &t.Enabled, &t.CreatedAt, &t.LastUsedAt, &t.AgentName); err != nil {
@@ -1516,28 +1856,18 @@ func (db *DB) ListAllTokens() ([]model.AgentToken, error) {
 // ListAccountsForAgent returns all enabled accounts the agent has at least one permission for.
 func (db *DB) ListAccountsForAgent(agentID int64) ([]model.Account, error) {
 	rows, err := db.conn.Query(
-		`SELECT DISTINCT acc.id, acc.name, acc.email_address, COALESCE(acc.server_id, 0),
-		        COALESCE(ms.smtp_host, ''), COALESCE(ms.smtp_port, 0), COALESCE(ms.smtp_tls, 1),
-		        COALESCE(ms.imap_host, ''), COALESCE(ms.imap_port, 0), COALESCE(ms.imap_tls, 1),
-		        acc.retrieval_enabled, acc.sending_enabled, acc.storage_mode, acc.enabled,
-		        acc.health_status, acc.created_at, acc.updated_at
-		 FROM accounts acc
-		 JOIN agent_permissions ap ON ap.account_id = acc.id
-		 LEFT JOIN mail_servers ms ON ms.id = acc.server_id
-		 WHERE ap.agent_id = ? AND acc.enabled = 1
-		 ORDER BY acc.name ASC`, agentID)
+		`SELECT DISTINCT `+accountColumns+accountFrom+`
+		 JOIN agent_permissions ap ON ap.account_id = a.id
+		 WHERE ap.agent_id = ? AND a.enabled = 1
+		 ORDER BY a.name ASC`, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("list accounts for agent: %w", err)
 	}
 	defer rows.Close()
-	var accounts []model.Account
+	accounts := []model.Account{}
 	for rows.Next() {
-		var a model.Account
-		if err := rows.Scan(&a.ID, &a.Name, &a.EmailAddress, &a.ServerID,
-			&a.SMTPHost, &a.SMTPPort, &a.SMTPTLS,
-			&a.IMAPHost, &a.IMAPPort, &a.IMAPTLS,
-			&a.RetrievalEnabled, &a.SendingEnabled, &a.StorageMode, &a.Enabled,
-			&a.HealthStatus, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		a, err := scanAccount(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan account for agent: %w", err)
 		}
 		accounts = append(accounts, a)

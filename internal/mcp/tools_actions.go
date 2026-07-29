@@ -106,7 +106,8 @@ func (s *Server) toolDeleteMessage(ctx context.Context, params map[string]interf
 		return errorResponse("INTERNAL_ERROR", "failed to delete message")
 	}
 
-	_ = s.audit.LogMessageDeleted(ctx, "agent", session.Agent.DisplayName, fmt.Sprintf("%d", messageID))
+	_ = s.audit.LogMessageDeleted(ctx, "agent",
+		fmt.Sprintf("%d", session.Agent.ID), session.Agent.DisplayName, fmt.Sprintf("%d", messageID))
 
 	return &ToolResponse{
 		OK:      true,

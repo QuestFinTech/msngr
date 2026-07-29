@@ -157,6 +157,32 @@ func openDB(cfg *config.Config) *db.DB {
 	return database
 }
 
+// enableCredentialEncryption turns on encryption at rest for account credentials and
+// converts any rows still held in cleartext.
+//
+// An unset key is not an error — it keeps the previous behaviour — but it is worth
+// saying out loud, because the column names claim the credentials are encrypted.
+func enableCredentialEncryption(cfg *config.Config, database *db.DB) {
+	key := strings.TrimSpace(cfg.EncryptionKey)
+	if key == "" || strings.HasPrefix(key, "${") {
+		slog.Warn("No encryption_key configured — account credentials are stored in cleartext",
+			"hint", "set MSNGR_ENCRYPTION_KEY and restart to encrypt them at rest")
+		return
+	}
+	if err := database.EnableCredentialEncryption(key); err != nil {
+		slog.Error("Failed to enable credential encryption", "error", err)
+		os.Exit(1)
+	}
+	converted, err := database.ReencryptPlaintextCredentials()
+	if err != nil {
+		slog.Error("Failed to encrypt existing credentials", "error", err)
+		os.Exit(1)
+	}
+	if converted > 0 {
+		slog.Info("Encrypted existing account credentials at rest", "accounts", converted)
+	}
+}
+
 func cmdRun() {
 	fmt.Print(banner)
 	fmt.Printf("  v%s\n\n", Version)
@@ -171,6 +197,8 @@ func cmdRun() {
 		slog.Error("Schema initialization failed", "error", err)
 		os.Exit(1)
 	}
+
+	enableCredentialEncryption(cfg, database)
 
 	store := storage.NewStore(cfg.StoragePath)
 
@@ -221,6 +249,8 @@ func cmdInit() {
 		slog.Error("Schema initialization failed", "error", err)
 		os.Exit(1)
 	}
+
+	enableCredentialEncryption(cfg, database)
 	slog.Info("Database initialized", "path", cfg.DB.Path)
 }
 
@@ -265,7 +295,29 @@ func cmdDoctor() {
 		fmt.Printf("OK (%s)\n", cfg.DB.Path)
 	}
 
-	// 3. Check accounts health.
+	// 3. Check credential encryption.
+	fmt.Print("Credentials: ")
+	key := strings.TrimSpace(cfg.EncryptionKey)
+	switch {
+	case key == "" || strings.HasPrefix(key, "${"):
+		fmt.Println("NOT ENCRYPTED - encryption_key is unset; account credentials are stored in cleartext")
+		hasError = true
+	default:
+		if err := database.EnableCredentialEncryption(key); err != nil {
+			fmt.Printf("FAIL - %v\n", err)
+			hasError = true
+		} else if plaintext, err := database.CountPlaintextCredentials(); err != nil {
+			fmt.Printf("FAIL - %v\n", err)
+			hasError = true
+		} else if plaintext > 0 {
+			fmt.Printf("PARTIAL - %d account(s) still stored in cleartext; run 'msngr run' or 'msngr init' to convert\n", plaintext)
+			hasError = true
+		} else {
+			fmt.Println("OK (encrypted at rest)")
+		}
+	}
+
+	// 4. Check accounts health.
 	fmt.Print("Accounts: ")
 	stats, err := database.GetDashboardStats()
 	if err != nil {

@@ -6,7 +6,9 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/luxemque/msngr/internal/db"
@@ -58,52 +60,27 @@ func (l *Logger) Log(ctx context.Context, event Event) error {
 	return nil
 }
 
+// LogStructured writes an audit event whose details are richer than string pairs —
+// recipient lists, counts, nested values. Marshalling failures are reported rather
+// than silently producing an event with empty details.
+func (l *Logger) LogStructured(ctx context.Context, event Event, details map[string]any) error {
+	data, err := json.Marshal(details)
+	if err != nil {
+		return fmt.Errorf("marshal audit details for %s: %w", event.Action, err)
+	}
+	event.DetailsJSON = string(data)
+	return l.Log(ctx, event)
+}
+
 func detailsJSON(kv map[string]string) string {
 	data, _ := json.Marshal(kv)
 	return string(data)
 }
 
-// LogSendRequested records that an agent requested to send a message.
-func (l *Logger) LogSendRequested(ctx context.Context, agentID, accountID, correlationID string) error {
-	return l.Log(ctx, Event{
-		ActorType:     "agent",
-		ActorID:       agentID,
-		Action:        "send_requested",
-		TargetType:    "account",
-		TargetID:      accountID,
-		Outcome:       "success",
-		DetailsJSON:   detailsJSON(map[string]string{"account_id": accountID}),
-		CorrelationID: correlationID,
-	})
-}
-
-// LogSendDenied records that a send request was denied by policy.
-func (l *Logger) LogSendDenied(ctx context.Context, agentID, reason, correlationID string) error {
-	return l.Log(ctx, Event{
-		ActorType:     "agent",
-		ActorID:       agentID,
-		Action:        "send_denied",
-		TargetType:    "message",
-		TargetID:      "",
-		Outcome:       "denied",
-		DetailsJSON:   detailsJSON(map[string]string{"reason": reason}),
-		CorrelationID: correlationID,
-	})
-}
-
-// LogMessageHeld records that a message was held for review.
-func (l *Logger) LogMessageHeld(ctx context.Context, agentID, ruleID, correlationID string) error {
-	return l.Log(ctx, Event{
-		ActorType:     "agent",
-		ActorID:       agentID,
-		Action:        "message_held",
-		TargetType:    "rule",
-		TargetID:      ruleID,
-		Outcome:       "success",
-		DetailsJSON:   detailsJSON(map[string]string{"rule_id": ruleID}),
-		CorrelationID: correlationID,
-	})
-}
+// The send lifecycle (send_requested / send_denied / message_held / send_completed /
+// send_failed) is written through LogStructured by the MCP outbound tools and the queue
+// processor. Those events carry recipient lists and SMTP results, which do not fit the
+// string-pair helpers below, and having one path for them keeps the shape consistent.
 
 // LogHoldApproved records that an operator approved a held message.
 func (l *Logger) LogHoldApproved(ctx context.Context, operatorID, holdID string) error {
@@ -130,7 +107,12 @@ func (l *Logger) LogHoldRejected(ctx context.Context, operatorID, holdID string)
 }
 
 // LogMessageDeleted records that a message was deleted.
-func (l *Logger) LogMessageDeleted(ctx context.Context, actorType, actorID, messageID string) error {
+//
+// actorID must be a stable identifier — an agent's numeric ID, not its display name.
+// Display names are renameable and unique only at a point in time, so an audit row
+// keyed on one cannot be reliably attributed later. The name is carried alongside as
+// a convenience for readers.
+func (l *Logger) LogMessageDeleted(ctx context.Context, actorType, actorID, actorName, messageID string) error {
 	return l.Log(ctx, Event{
 		ActorType:  actorType,
 		ActorID:    actorID,
@@ -138,6 +120,37 @@ func (l *Logger) LogMessageDeleted(ctx context.Context, actorType, actorID, mess
 		TargetType: "message",
 		TargetID:   messageID,
 		Outcome:    "success",
+		DetailsJSON: detailsJSON(map[string]string{
+			"actor_display_name": actorName,
+			"message_id":         messageID,
+		}),
+	})
+}
+
+// LogAccountHealthChanged records a transition in an account's connectivity health.
+//
+// Health used to be a last-known-value with no history, so the only question anyone
+// asks during an incident — "since when?" — could only be answered from journal
+// retention, if at all. Transitions are recorded here so the answer outlives the logs.
+func (l *Logger) LogAccountHealthChanged(ctx context.Context, actorID string, accountID int64, email, from, to, errMsg string) error {
+	outcome := "success"
+	if to != "ok" {
+		outcome = "error"
+	}
+	return l.Log(ctx, Event{
+		ActorType:  "system",
+		ActorID:    actorID,
+		Action:     "account_health_changed",
+		TargetType: "account",
+		TargetID:   strconv.FormatInt(accountID, 10),
+		Outcome:    outcome,
+		DetailsJSON: detailsJSON(map[string]string{
+			"email":      email,
+			"from":       from,
+			"to":         to,
+			"error":      errMsg,
+			"account_id": strconv.FormatInt(accountID, 10),
+		}),
 	})
 }
 
@@ -155,4 +168,3 @@ func (l *Logger) LogOperatorLogin(ctx context.Context, operatorID, email string)
 		}),
 	})
 }
-

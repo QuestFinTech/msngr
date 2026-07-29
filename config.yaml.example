@@ -11,6 +11,14 @@ storage_path: ./storage
 
 # Encryption key for secrets at rest.
 # Reference an env var so the key never appears in this file.
+#
+# Mail account credentials are encrypted with AES-256-GCM under a key derived from
+# this value. Leave it unset and they are stored in cleartext; MSNGR warns at startup
+# when that is the case. Setting it on an existing deployment converts stored
+# credentials on the next start.
+#
+# Changing this value after credentials have been encrypted makes them undecryptable —
+# re-enter each account's credentials in the web UI if you rotate it.
 encryption_key: "${MSNGR_ENCRYPTION_KEY}"
 
 log:
