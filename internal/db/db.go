@@ -655,12 +655,13 @@ func (db *DB) InsertMessage(msg *model.Message) (int64, error) {
 	}
 	res, err := db.conn.Exec(
 		`INSERT INTO messages
-		 (account_id, message_id, imap_uid, imap_uidvalidity, folder, from_addr, to_addrs, cc_addrs, subject, date, size, content_hash, direction, retrieved_at, archive_path, stored_on_disk)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (account_id, message_id, imap_uid, imap_uidvalidity, folder, from_addr, to_addrs, cc_addrs, subject, date, size, content_hash, direction, retrieved_at, archive_path, stored_on_disk, is_read, is_flagged)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.AccountID, msg.MessageID, msg.IMAPUID, msg.IMAPUIDValidity,
 		msg.Folder, msg.FromAddr, msg.ToAddrs, msg.CcAddrs,
 		msg.Subject, msg.Date, msg.Size, msg.ContentHash,
 		msg.Direction, now, msg.ArchivePath, storedOnDisk,
+		boolToInt(msg.IsRead), boolToInt(msg.IsFlagged),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)

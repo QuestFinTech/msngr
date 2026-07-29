@@ -1,6 +1,40 @@
 {{template "base" .}}
 {{define "content"}}
 {{template "nav" .}}
+{{$usage := index .Data "Usage"}}
+<style nonce="{{.Nonce}}">
+    /* Bar heights are emitted as classes rather than inline style attributes: the
+       page CSP allows a nonced <style> element but not style="" attributes. */
+    .usage-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 3px;
+        height: 120px;
+        padding: 12px 0 0;
+        overflow-x: auto;
+    }
+    .usage-day { display: flex; flex-direction: column; justify-content: flex-end;
+                 align-items: center; gap: 2px; flex: 1 0 10px; height: 100%; }
+    .usage-bars { display: flex; align-items: flex-end; gap: 2px; height: 100%; width: 100%; justify-content: center; }
+    .usage-bar { width: 6px; border-radius: 2px 2px 0 0; min-height: 2px; }
+    .usage-bar-in { background: var(--primary); }
+    .usage-bar-out { background: var(--success); }
+    .usage-bar-empty { background: var(--border); height: 2px; }
+    .usage-legend { display: flex; gap: 16px; align-items: center; font-size: 13px; color: var(--text-secondary); }
+    .usage-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+    .usage-swatch-in { background: var(--primary); }
+    .usage-swatch-out { background: var(--success); }
+    .usage-axis { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+    .usage-windows { display: flex; gap: 8px; align-items: center; }
+    .usage-window-link { font-size: 13px; padding: 4px 10px; border-radius: var(--radius);
+                         border: 1px solid var(--border); text-decoration: none; color: var(--text-secondary); }
+    .usage-window-link.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .num { text-align: end; font-variant-numeric: tabular-nums; }
+    {{range $i, $d := $usage.Daily}}
+    .bar-in-{{$i}} { height: {{$d.ReceivedPct}}%; }
+    .bar-out-{{$i}} { height: {{$d.SentPct}}%; }
+    {{end}}
+</style>
 <div class="main-content">
     <div class="container">
         <div class="page-header">
@@ -17,34 +51,205 @@
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").Accounts}}{{else}}0{{end}}</div>
+                <div class="stat-value">{{(index .Data "Stats").Accounts}}</div>
                 <div class="stat-label">Mail Accounts</div>
                 <div class="stat-hint">Email addresses MSNGR manages</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").Agents}}{{else}}0{{end}}</div>
+                <div class="stat-value">{{(index .Data "Stats").Agents}}</div>
                 <div class="stat-label">Agents</div>
                 <div class="stat-hint">Programs that access mail through MSNGR</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").Rules}}{{else}}0{{end}}</div>
+                <div class="stat-value">{{(index .Data "Stats").Rules}}</div>
                 <div class="stat-label">Active Rules</div>
                 <div class="stat-hint">Policy rules currently enforcing decisions</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").QueueDepth}}{{else}}0{{end}}</div>
+                <div class="stat-value">{{(index .Data "Stats").QueueDepth}}</div>
                 <div class="stat-label">Queue Depth</div>
                 <div class="stat-hint">Messages waiting to be sent</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").PendingHolds}}{{else}}0{{end}}</div>
+                <div class="stat-value">{{(index .Data "Stats").PendingHolds}}</div>
                 <div class="stat-label">Pending Holds</div>
                 <div class="stat-hint">Messages paused for your review</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value">{{if .Data}}{{(index .Data "Stats").AuditEvents}}{{else}}0{{end}}</div>
+                <div class="stat-value">{{(index .Data "Stats").AuditEvents}}</div>
                 <div class="stat-label">Audit Events</div>
                 <div class="stat-hint">Recorded actions and decisions</div>
+            </div>
+        </div>
+
+        <div class="page-header">
+            <h2 class="mt-0 mb-0">Usage</h2>
+            <div class="usage-windows">
+                {{range $.Data.WindowOptions}}
+                <a class="usage-window-link{{if eq . $usage.WindowDays}} active{{end}}" href="/dashboard?days={{.}}">{{.}} days</a>
+                {{end}}
+            </div>
+        </div>
+        <p class="text-secondary fs-13 mb-16">Mail that actually moved through the gateway in the last {{$usage.WindowDays}} days.</p>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{{$usage.Received}}</div>
+                <div class="stat-label">Received</div>
+                <div class="stat-hint">Messages retrieved from mail servers</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{$usage.Sent}}</div>
+                <div class="stat-label">Sent</div>
+                <div class="stat-hint">Messages accepted by an SMTP server</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{$usage.Failed}}</div>
+                <div class="stat-label">Failed</div>
+                <div class="stat-hint">Delivery attempts that did not succeed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">
+                    {{if lt $usage.DeliveryRatePct 0}}<span class="text-muted">—</span>{{else}}{{$usage.DeliveryRatePct}}%{{end}}
+                </div>
+                <div class="stat-label">Delivery Rate</div>
+                <div class="stat-hint">{{if lt $usage.DeliveryRatePct 0}}No sends attempted in this window{{else}}Share of attempts the server accepted{{end}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{$usage.Held}}</div>
+                <div class="stat-label">Held</div>
+                <div class="stat-hint">Messages paused by a policy rule</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{$usage.Denied}}</div>
+                <div class="stat-label">Denied</div>
+                <div class="stat-hint">Sends blocked by policy</div>
+            </div>
+        </div>
+
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mt-0 mb-0">Daily Volume</h2>
+                <div class="usage-legend">
+                    <span><span class="usage-swatch usage-swatch-in"></span>Received</span>
+                    <span><span class="usage-swatch usage-swatch-out"></span>Sent</span>
+                </div>
+            </div>
+            {{if $usage.Daily}}
+            <div class="usage-chart">
+                {{range $i, $d := $usage.Daily}}
+                <div class="usage-day" title="{{$d.Day}}: {{$d.Received}} received, {{$d.Sent}} sent">
+                    <div class="usage-bars">
+                        <div class="usage-bar {{if $d.Received}}usage-bar-in bar-in-{{$i}}{{else}}usage-bar-empty{{end}}"></div>
+                        <div class="usage-bar {{if $d.Sent}}usage-bar-out bar-out-{{$i}}{{else}}usage-bar-empty{{end}}"></div>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+            <div class="usage-axis">
+                <span>{{(index $usage.Daily 0).Day}}</span>
+                <span>{{(index $usage.Daily (len $usage.Daily | add -1)).Day}}</span>
+            </div>
+            {{else}}
+            <div class="empty-state">No activity recorded in this window.</div>
+            {{end}}
+        </div>
+
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mt-0 mb-0">Activity by Account</h2>
+            </div>
+            {{if $usage.Accounts}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Account</th>
+                        <th class="num">Received</th>
+                        <th class="num">Sent</th>
+                        <th>Health</th>
+                        <th>Last Polled</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range $usage.Accounts}}
+                    <tr>
+                        <td>{{.Email}}</td>
+                        <td class="num">{{.Received}}</td>
+                        <td class="num">{{.Sent}}</td>
+                        <td>
+                            {{if eq .HealthStatus "ok"}}<span class="badge badge-active">ok</span>
+                            {{else if eq .HealthStatus "unknown"}}<span class="badge badge-info">unknown</span>
+                            {{else}}<span class="badge badge-inactive">{{.HealthStatus}}</span>{{end}}
+                        </td>
+                        <td class="text-secondary fs-13">{{if .LastPolledAt}}{{.LastPolledAt}}{{else}}<span class="text-muted">never</span>{{end}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">No enabled accounts.</div>
+            {{end}}
+        </div>
+
+        <div class="card mb-24">
+            <div class="card-header">
+                <h2 class="mt-0 mb-0">Activity by Agent</h2>
+            </div>
+            {{if $usage.Agents}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Agent</th>
+                        <th class="num">Requested</th>
+                        <th class="num">Sent</th>
+                        <th class="num">Failed</th>
+                        <th class="num">Held</th>
+                        <th class="num">Denied</th>
+                        <th>Last Activity</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range $usage.Agents}}
+                    <tr>
+                        <td>
+                            {{.DisplayName}}
+                            {{if not .Enabled}}<span class="badge badge-inactive">disabled</span>{{end}}
+                        </td>
+                        <td class="num">{{.Requested}}</td>
+                        <td class="num">{{.Sent}}</td>
+                        <td class="num">{{.Failed}}</td>
+                        <td class="num">{{.Held}}</td>
+                        <td class="num">{{.Denied}}</td>
+                        <td class="text-secondary fs-13">{{if .LastActivity}}{{.LastActivity}}{{else}}<span class="text-muted">never</span>{{end}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">No agents configured.</div>
+            {{end}}
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mt-0 mb-0">Storage</h2>
+            </div>
+            <div class="stats-grid mb-0">
+                <div class="stat-card">
+                    <div class="stat-value">{{$usage.StoredMessages}}</div>
+                    <div class="stat-label">Messages Stored</div>
+                    <div class="stat-hint">Metadata rows held in the database</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{$usage.ArchivedOnDisk}}</div>
+                    <div class="stat-label">Archived on Disk</div>
+                    <div class="stat-hint">Messages with body or attachments stored</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{bytesToMB (index .Data "StorageBytes")}} MB</div>
+                    <div class="stat-label">Archive Size</div>
+                    <div class="stat-hint">Disk used by message archives</div>
+                </div>
             </div>
         </div>
     </div>

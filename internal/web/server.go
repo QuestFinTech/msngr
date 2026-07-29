@@ -114,6 +114,7 @@ func (s *Server) loadTemplates() map[string]*template.Template {
 
 	funcMap := template.FuncMap{
 		"fmtInt": func(v int) string { return fmt.Sprintf("%d", v) },
+		"add":    func(delta, v int) int { return v + delta },
 		"bytesToMB": func(b int64) string {
 			mb := float64(b) / (1024 * 1024)
 			if mb < 0.1 {
@@ -562,15 +563,56 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		_ = s.db.SetSystemSetting("welcome_dismissed", "true")
 	}
 
+	windowDays := parseUsageWindow(r.URL.Query().Get("days"))
+	usage, err := s.db.GetUsageStats(windowDays)
+	if err != nil {
+		slog.Error("usage stats", "error", err)
+		usage = &db.UsageStats{WindowDays: windowDays}
+	}
+
+	var storageBytes int64
+	if s.store != nil {
+		if bytes, err := s.store.DiskUsage(); err != nil {
+			slog.Error("disk usage", "error", err)
+		} else {
+			storageBytes = bytes
+		}
+	}
+
 	pd := &PageData{
 		Title:       "Dashboard",
 		CurrentPage: "dashboard",
 		Data: map[string]interface{}{
-			"Stats":       stats,
-			"ShowWelcome": showWelcome,
+			"Stats":         stats,
+			"Usage":         usage,
+			"StorageBytes":  storageBytes,
+			"WindowOptions": usageWindowOptions,
+			"ShowWelcome":   showWelcome,
 		},
 	}
 	s.render(w, r, "dashboard.html", pd)
+}
+
+// usageWindowOptions are the reporting windows offered on the dashboard.
+var usageWindowOptions = []int{7, 30, 90}
+
+// parseUsageWindow maps the ?days= parameter to one of the offered windows,
+// defaulting to 30. Only the offered values are accepted so a hand-typed value
+// cannot ask for an unbounded scan.
+func parseUsageWindow(raw string) int {
+	if raw == "" {
+		return 30
+	}
+	days, err := strconv.Atoi(raw)
+	if err != nil {
+		return 30
+	}
+	for _, allowed := range usageWindowOptions {
+		if days == allowed {
+			return days
+		}
+	}
+	return 30
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

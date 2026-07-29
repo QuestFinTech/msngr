@@ -49,14 +49,14 @@ func (s *Server) toolListMessages(ctx context.Context, params map[string]interfa
 		return &ToolResponse{
 			OK:        false,
 			ErrorCode: "FOLDER_NOT_RETRIEVED",
-			Message: fmt.Sprintf("no messages have been retrieved into folder %q; MSNGR polls %s and lists locally stored messages, "+
-				"so folders the gateway does not retrieve (including Sent) are always empty here", folder, retrievedFolder),
+			Message: fmt.Sprintf("no messages are stored in folder %q; MSNGR polls %s and files delivered outbound mail "+
+				"under the account's Sent folder, and lists only what it has stored", folder, retrievedFolder),
 			Details: map[string]interface{}{
 				"requested_folder":  folder,
 				"polled_folder":     retrievedFolder,
 				"available_folders": known,
 			},
-			Suggestion: "list " + retrievedFolder + ", or use msngr_queue_status to inspect outbound messages",
+			Suggestion: "use one of available_folders — the server's Sent mailbox is often named INBOX.Sent rather than Sent",
 		}
 	}
 
