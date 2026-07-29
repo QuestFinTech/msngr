@@ -37,6 +37,20 @@ type Server struct {
 	sessionsMu sync.RWMutex
 
 	sessionTimeout time.Duration // fallback if DB has no setting
+
+	// poller retrieves mail on demand. Nil when retrieval is not running in this
+	// process, in which case msngr_poll_account reports that rather than pretending.
+	poller AccountPoller
+}
+
+// AccountPoller triggers an immediate retrieval for one account.
+type AccountPoller interface {
+	PollNow(accountID int64) (int, error)
+}
+
+// SetPoller wires the retrieval loop in so agents can request a poll.
+func (s *Server) SetPoller(p AccountPoller) {
+	s.poller = p
 }
 
 // getSessionTimeout returns the current session timeout, reading from DB if available.
@@ -50,6 +64,18 @@ func (s *Server) getSessionTimeout() time.Duration {
 	}
 	return s.sessionTimeout
 }
+
+// Capabilities an agent can be granted on an account. Each verb checks its own, so a
+// grant of one does not imply another.
+const (
+	capabilityRead               = "read"
+	capabilitySend               = "send"
+	capabilityDownloadAttachment = "download_attachment"
+	// capabilityReviewHold lets an agent approve or reject held messages. It is not
+	// granted by default: holds exist so a human decides, and an agent that can release
+	// its own held mail is not a review step.
+	capabilityReviewHold = "review_hold"
+)
 
 // toolFunc is the signature for individual tool handlers.
 // The context carries the authenticated MCPSession.
@@ -253,6 +279,35 @@ func requireAccountSelected(session *model.MCPSession) *ToolResponse {
 	return nil
 }
 
+// requireCapability checks that an account is selected and that the agent holds the
+// named capability on it.
+//
+// Selecting an account only proves the agent has *some* grant on it. Least privilege
+// means each verb checks its own capability, so an agent granted read-only cannot
+// send and an agent granted send-only cannot read the mailbox.
+func (s *Server) requireCapability(ctx context.Context, capability string) *ToolResponse {
+	session := getSession(ctx)
+	if errResp := requireAccountSelected(session); errResp != nil {
+		return errResp
+	}
+
+	ok, err := s.db.CheckAgentCapability(ctx, session.Agent.ID, session.SelectedAccountID, capability)
+	if err != nil {
+		slog.Error("check agent capability", "error", err, "capability", capability)
+		return errorResponse("INTERNAL_ERROR", "failed to verify agent capability")
+	}
+	if !ok {
+		return &ToolResponse{
+			OK:        false,
+			ErrorCode: "ACCESS_DENIED",
+			Message:   fmt.Sprintf("agent does not have the %q capability on this account", capability),
+			Suggestion: fmt.Sprintf("ask an administrator to grant %q for account %d",
+				capability, session.SelectedAccountID),
+		}
+	}
+	return nil
+}
+
 // --- Tool registration ---
 
 func (s *Server) registerTools(mcpServer *sdkmcp.Server) {
@@ -426,6 +481,18 @@ func (s *Server) registerTools(mcpServer *sdkmcp.Server) {
 			},
 		},
 		s.withAuth(s.toolValidateSend),
+	)
+
+	mcpServer.AddTool(
+		&sdkmcp.Tool{
+			Name:        "msngr_poll_account",
+			Description: "Retrieve new mail for the selected account immediately instead of waiting for the next polling cycle. Use this before concluding that an inbox is empty. Rate-limited to one poll per account every 10 seconds.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		s.withAuth(s.toolPollAccount),
 	)
 
 	mcpServer.AddTool(

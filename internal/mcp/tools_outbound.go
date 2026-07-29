@@ -50,14 +50,8 @@ func (s *Server) buildSendAction(ctx context.Context, params map[string]interfac
 		return nil, errorResponse("ACCESS_DENIED", "sending is disabled for this account")
 	}
 
-	// Verify agent has the "send" capability on this account.
-	hasSend, err := s.db.CheckAgentCapability(ctx, session.Agent.ID, accountID, "send")
-	if err != nil {
-		slog.Error("check send capability", "error", err)
-		return nil, errorResponse("INTERNAL_ERROR", "failed to verify send capability")
-	}
-	if !hasSend {
-		return nil, errorResponse("ACCESS_DENIED", "agent does not have send permission on this account")
+	if errResp := s.requireCapability(ctx, capabilitySend); errResp != nil {
+		return nil, errResp
 	}
 
 	toAddrs := splitAddrs(to)

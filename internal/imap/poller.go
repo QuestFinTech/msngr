@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -27,9 +28,10 @@ type Poller struct {
 	stopCh chan struct{}
 	once   sync.Once
 
-	// Per-account backoff state, keyed by account ID.
-	mu       sync.Mutex
-	backoffs map[int64]backoffState
+	// Per-account backoff state and manual-poll cooldowns, keyed by account ID.
+	mu          sync.Mutex
+	backoffs    map[int64]backoffState
+	manualPolls map[int64]time.Time
 }
 
 // backoffState is the current backoff for one account: how long the window is, and
@@ -43,12 +45,13 @@ type backoffState struct {
 // The store parameter may be nil if filesystem storage is not configured.
 func NewPoller(database *db.DB, store *storage.Store, tickMs int) *Poller {
 	return &Poller{
-		db:       database,
-		store:    store,
-		audit:    audit.NewLogger(database),
-		tickMs:   tickMs,
-		stopCh:   make(chan struct{}),
-		backoffs: make(map[int64]backoffState),
+		db:          database,
+		store:       store,
+		audit:       audit.NewLogger(database),
+		tickMs:      tickMs,
+		stopCh:      make(chan struct{}),
+		backoffs:    make(map[int64]backoffState),
+		manualPolls: make(map[int64]time.Time),
 	}
 }
 
@@ -110,7 +113,7 @@ func (p *Poller) tick() {
 			continue
 		}
 
-		pollErr := p.pollAccount(acct)
+		_, pollErr := p.pollAccount(acct)
 		if pollErr != nil {
 			slog.Error("imap poller: account poll failed", "account_id", acct.ID, "error", pollErr)
 			p.increaseBackoff(acct.ID)
@@ -124,6 +127,61 @@ func (p *Poller) tick() {
 			slog.Error("imap poller: failed to record poll time", "account_id", acct.ID, "error", err)
 		}
 	}
+}
+
+// minManualPollInterval is the shortest gap between two caller-triggered polls of the
+// same account. Retrieval is a network round trip against someone else's mail server;
+// an agent in a loop should not be able to turn that into a hammer.
+const minManualPollInterval = 10 * time.Second
+
+// ErrPollTooSoon is returned when a manual poll is requested inside the cooldown.
+var ErrPollTooSoon = errors.New("account was polled too recently")
+
+// PollNow retrieves one account immediately instead of waiting for the next tick, and
+// reports how many new messages it stored.
+//
+// It exists so an empty inbox can be trusted: without it a caller reading no messages
+// cannot tell whether the mailbox is empty or the gateway has not looked yet.
+func (p *Poller) PollNow(accountID int64) (int, error) {
+	acct, err := p.db.GetAccountByID(accountID)
+	if err != nil {
+		return 0, fmt.Errorf("look up account: %w", err)
+	}
+	if acct == nil {
+		return 0, fmt.Errorf("account %d not found", accountID)
+	}
+	if !acct.Enabled || !acct.RetrievalEnabled {
+		return 0, fmt.Errorf("retrieval is not enabled for account %d", accountID)
+	}
+
+	if !p.claimManualPoll(accountID) {
+		return 0, ErrPollTooSoon
+	}
+
+	inserted, pollErr := p.pollAccount(acct)
+	if pollErr != nil {
+		p.increaseBackoff(acct.ID)
+		p.recordHealth(acct, "error", pollErr.Error())
+	} else {
+		p.resetBackoff(acct.ID)
+		p.recordHealth(acct, "ok", "")
+	}
+	if err := p.db.MarkAccountPolled(acct.ID); err != nil {
+		slog.Error("imap poller: failed to record poll time", "account_id", acct.ID, "error", err)
+	}
+	return inserted, pollErr
+}
+
+// claimManualPoll reports whether a manual poll may run now, recording the attempt.
+func (p *Poller) claimManualPoll(accountID int64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if last, ok := p.manualPolls[accountID]; ok && time.Since(last) < minManualPollInterval {
+		return false
+	}
+	p.manualPolls[accountID] = time.Now()
+	return true
 }
 
 // recordHealth persists the observed health and audits genuine transitions.
@@ -143,30 +201,30 @@ func (p *Poller) recordHealth(acct *model.Account, status, errMsg string) {
 	}
 }
 
-func (p *Poller) pollAccount(acct *model.Account) error {
+func (p *Poller) pollAccount(acct *model.Account) (int, error) {
 	slog.Info("imap poller: polling account", "account_id", acct.ID, "email", acct.EmailAddress)
 
 	// Get credentials.
 	username, password, err := p.db.GetAccountCredentials(acct.ID)
 	if err != nil {
-		return fmt.Errorf("get credentials: %w", err)
+		return 0, fmt.Errorf("get credentials: %w", err)
 	}
 
 	// Connect.
 	client, err := Connect(acct.IMAPHost, acct.IMAPPort, acct.IMAPTLS)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return 0, fmt.Errorf("connect: %w", err)
 	}
 	defer client.Close()
 
 	// Authenticate.
 	if err := client.Login(username, password); err != nil {
-		return fmt.Errorf("login: %w", err)
+		return 0, fmt.Errorf("login: %w", err)
 	}
 
 	// Select INBOX.
 	if err := client.SelectFolder("INBOX"); err != nil {
-		return fmt.Errorf("select inbox: %w", err)
+		return 0, fmt.Errorf("select inbox: %w", err)
 	}
 
 	// Fetch messages from the last 24 hours as a rolling window.
@@ -174,7 +232,7 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	envelopes, err := client.FetchMessages(since)
 	if err != nil {
-		return fmt.Errorf("fetch messages: %w", err)
+		return 0, fmt.Errorf("fetch messages: %w", err)
 	}
 
 	slog.Info("imap poller: fetched candidates", "account_id", acct.ID, "count", len(envelopes))
@@ -291,7 +349,7 @@ func (p *Poller) pollAccount(acct *model.Account) error {
 	}
 
 	slog.Info("imap poller: poll complete", "account_id", acct.ID, "new_messages", inserted, "total_candidates", len(envelopes))
-	return nil
+	return inserted, nil
 }
 
 // inBackoff reports whether the account is still inside its backoff window.

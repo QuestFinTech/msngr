@@ -13,6 +13,7 @@ import (
 	"github.com/luxemque/msngr/internal/db"
 	"github.com/luxemque/msngr/internal/model"
 	smtpAdapter "github.com/luxemque/msngr/internal/smtp"
+	"github.com/luxemque/msngr/internal/storage"
 )
 
 const maxConcurrency = 5
@@ -20,13 +21,20 @@ const maxConcurrency = 5
 // Processor reads queued outbound items and delivers them via SMTP.
 type Processor struct {
 	db     *db.DB
+	store  *storage.Store
 	audit  *audit.Logger
 	tickMs int
 }
 
 // NewProcessor creates a new queue processor.
-func NewProcessor(database *db.DB, tickMs int) *Processor {
-	return &Processor{db: database, audit: audit.NewLogger(database), tickMs: tickMs}
+// The store may be nil if filesystem storage is not configured.
+func NewProcessor(database *db.DB, store *storage.Store, tickMs int) *Processor {
+	return &Processor{db: database, store: store, audit: audit.NewLogger(database), tickMs: tickMs}
+}
+
+// nowRFC3339 is the timestamp format used for recorded message dates.
+func nowRFC3339() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
 // Start begins processing the outbound queue on a recurring interval.
@@ -186,6 +194,18 @@ func (p *Processor) processItem(ctx context.Context, item model.OutboundItem) {
 		}
 		logger.Info("Message sent successfully", "smtp_response", result.SMTPResponse, "message_id", result.MessageID)
 		p.auditSend(ctx, logger, "send_completed", "success", outcome)
+
+		// Retain a copy. Best-effort: the message is already delivered, and a failure
+		// to file it must not be reported as a delivery failure.
+		p.recordSentCopy(ctx, logger, sentCopy{
+			account:   account,
+			item:      item,
+			to:        toAddrs,
+			cc:        ccAddrs,
+			messageID: result.MessageID,
+			raw:       result.RawMessage,
+			atts:      smtpAttachments,
+		})
 		return
 	}
 

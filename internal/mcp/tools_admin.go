@@ -9,6 +9,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/luxemque/msngr/internal/audit"
 	"github.com/luxemque/msngr/internal/model"
 	"github.com/luxemque/msngr/internal/queue"
 )
@@ -83,11 +84,12 @@ func (s *Server) toolLogin(ctx context.Context, req *sdkmcp.CallToolRequest) (*s
 	}), nil
 }
 
-// toolListHolds returns holds with the given status.
-func (s *Server) toolListHolds(_ context.Context, params map[string]interface{}) *ToolResponse {
+// toolListHolds returns holds with the given status, scoped to the agent's accounts.
+func (s *Server) toolListHolds(ctx context.Context, params map[string]interface{}) *ToolResponse {
+	session := getSession(ctx)
 	status := paramStringDefault(params, "status", "pending")
 
-	holds, err := s.db.ListHolds(status)
+	holds, err := s.db.ListHoldsForAgent(ctx, session.Agent.ID, status)
 	if err != nil {
 		slog.Error("list holds", "error", err)
 		return errorResponse("INTERNAL_ERROR", "failed to list holds")
@@ -95,13 +97,25 @@ func (s *Server) toolListHolds(_ context.Context, params map[string]interface{})
 
 	return &ToolResponse{
 		OK:      true,
-		Message: fmt.Sprintf("found %d holds with status %q", len(holds), status),
+		Message: fmt.Sprintf("%d hold(s) with status %q on accounts this agent can access", len(holds), status),
 		Data:    holds,
+		Details: map[string]interface{}{
+			"status": status,
+			"count":  len(holds),
+			"scope":  "accounts this agent has a permission on",
+		},
 	}
 }
 
-// toolReviewHold approves or rejects a held message. Operator-level action.
-func (s *Server) toolReviewHold(_ context.Context, params map[string]interface{}) *ToolResponse {
+// toolReviewHold approves or rejects a held message.
+//
+// This is a review step, so it is deliberately hard for an agent to reach. It requires
+// the review_hold capability, which is not granted by default, and an agent may never
+// release its own held message whatever it has been granted: a hold that the sender can
+// clear is not a review, it is a delay.
+func (s *Server) toolReviewHold(ctx context.Context, params map[string]interface{}) *ToolResponse {
+	session := getSession(ctx)
+
 	holdID, ok := paramInt64(params, "hold_id")
 	if !ok {
 		return errorResponse("INVALID_PARAMS", "hold_id is required and must be a number")
@@ -111,9 +125,50 @@ func (s *Server) toolReviewHold(_ context.Context, params map[string]interface{}
 		return errorResponse("INVALID_PARAMS", "action must be 'approve' or 'reject'")
 	}
 
-	// For MCP-initiated reviews, operator_id 0 indicates an agent-initiated review.
-	// In production, this would be further gated by operator authentication.
-	var err error
+	hold, err := s.db.GetHoldContext(ctx, holdID)
+	if err != nil {
+		slog.Error("get hold context", "error", err, "hold_id", holdID)
+		return errorResponse("INTERNAL_ERROR", "failed to look up hold")
+	}
+	if hold == nil {
+		return errorResponse("NOT_FOUND", "no hold with that ID is visible to this agent")
+	}
+
+	hasCap, err := s.db.CheckAgentCapability(ctx, session.Agent.ID, hold.AccountID, capabilityReviewHold)
+	if err != nil {
+		slog.Error("check review_hold capability", "error", err)
+		return errorResponse("INTERNAL_ERROR", "failed to verify agent capability")
+	}
+	if !hasCap {
+		// Same answer whether the agent lacks the capability or cannot see the account,
+		// so this cannot be used to probe for holds elsewhere.
+		return &ToolResponse{
+			OK:         false,
+			ErrorCode:  "ACCESS_DENIED",
+			Message:    "agent does not have the review_hold capability for this account",
+			Suggestion: "held messages are reviewed by an operator in the MSNGR web UI",
+		}
+	}
+
+	if hold.RequestedByAgentID != nil && *hold.RequestedByAgentID == session.Agent.ID {
+		slog.Warn("agent attempted to review its own held message",
+			"agent", session.Agent.DisplayName, "hold_id", holdID, "action", action)
+		return &ToolResponse{
+			OK:         false,
+			ErrorCode:  "SELF_REVIEW_FORBIDDEN",
+			Message:    "an agent cannot review a message it queued itself",
+			Suggestion: "ask an operator to review this hold in the MSNGR web UI",
+		}
+	}
+
+	if hold.Status != "pending" {
+		return &ToolResponse{
+			OK:        false,
+			ErrorCode: "ALREADY_REVIEWED",
+			Message:   fmt.Sprintf("hold %d has already been %s", holdID, hold.Status),
+		}
+	}
+
 	switch action {
 	case "approve":
 		err = queue.ApproveHold(s.db, holdID, 0)
@@ -124,6 +179,23 @@ func (s *Server) toolReviewHold(_ context.Context, params map[string]interface{}
 		slog.Error("review hold", "error", err, "hold_id", holdID, "action", action)
 		return errorResponse("INTERNAL_ERROR", "internal error")
 	}
+
+	auditAction := "hold_approved"
+	if action == "reject" {
+		auditAction = "hold_rejected"
+	}
+	_ = s.audit.LogStructured(ctx, audit.Event{
+		ActorType:  "agent",
+		ActorID:    fmt.Sprintf("%d", session.Agent.ID),
+		Action:     auditAction,
+		TargetType: "hold",
+		TargetID:   fmt.Sprintf("%d", holdID),
+		Outcome:    "success",
+	}, map[string]any{
+		"agent_display_name": session.Agent.DisplayName,
+		"queue_id":           hold.QueueID,
+		"account_id":         hold.AccountID,
+	})
 
 	return &ToolResponse{
 		OK:      true,

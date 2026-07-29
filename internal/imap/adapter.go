@@ -79,6 +79,68 @@ func (c *Client) Login(username, password string) error {
 	return nil
 }
 
+// sentFolderCandidates are tried, in order, when the server does not advertise a
+// SPECIAL-USE \Sent mailbox. Server naming varies and there is no standard fallback.
+var sentFolderCandidates = []string{"Sent", "INBOX.Sent", "Sent Items", "INBOX.Sent Items", "Sent Messages"}
+
+// FindSentFolder returns the mailbox that holds sent mail.
+//
+// It prefers the SPECIAL-USE \Sent attribute, which is authoritative, and falls back
+// to matching well-known names against the mailboxes the server actually lists. It
+// returns "" when nothing matches, so the caller can skip the APPEND rather than
+// guessing and creating a stray mailbox.
+func (c *Client) FindSentFolder() (string, error) {
+	listCmd := c.inner.List("", "*", &imap.ListOptions{ReturnSpecialUse: true})
+	mailboxes, err := listCmd.Collect()
+	if err != nil {
+		return "", fmt.Errorf("imap list mailboxes: %w", err)
+	}
+
+	names := make([]string, 0, len(mailboxes))
+	for _, mbox := range mailboxes {
+		names = append(names, mbox.Mailbox)
+		for _, attr := range mbox.Attrs {
+			if attr == imap.MailboxAttrSent {
+				return mbox.Mailbox, nil
+			}
+		}
+	}
+
+	for _, candidate := range sentFolderCandidates {
+		for _, name := range names {
+			if strings.EqualFold(name, candidate) {
+				return name, nil
+			}
+		}
+	}
+
+	slog.Warn("imap: no Sent folder found", "mailboxes", len(names))
+	return "", nil
+}
+
+// AppendMessage copies a raw RFC 5322 message into a mailbox, flagged \Seen.
+//
+// This is how a sent message ends up in the account's Sent folder: MSNGR delivers
+// through SMTP, which leaves no copy behind on the sender's side.
+func (c *Client) AppendMessage(mailbox string, raw []byte) error {
+	appendCmd := c.inner.Append(mailbox, int64(len(raw)), &imap.AppendOptions{
+		Flags: []imap.Flag{imap.FlagSeen},
+		Time:  time.Now(),
+	})
+	if _, err := appendCmd.Write(raw); err != nil {
+		appendCmd.Close()
+		return fmt.Errorf("imap append write to %s: %w", mailbox, err)
+	}
+	if err := appendCmd.Close(); err != nil {
+		return fmt.Errorf("imap append close for %s: %w", mailbox, err)
+	}
+	if _, err := appendCmd.Wait(); err != nil {
+		return fmt.Errorf("imap append to %s: %w", mailbox, err)
+	}
+	slog.Info("imap: appended message", "mailbox", mailbox, "bytes", len(raw))
+	return nil
+}
+
 // SelectFolder selects a mailbox and stores its UIDValidity.
 func (c *Client) SelectFolder(name string) error {
 	data, err := c.inner.Select(name, nil).Wait()

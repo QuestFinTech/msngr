@@ -2,9 +2,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+
+	imappoller "github.com/luxemque/msngr/internal/imap"
 )
 
 // retrievedFolder is the only folder MSNGR polls. Anything else can only hold messages
@@ -19,7 +22,7 @@ const retrievedFolder = "INBOX"
 // indistinguishable, and each of those invites a different next action.
 func (s *Server) toolListMessages(ctx context.Context, params map[string]interface{}) *ToolResponse {
 	session := getSession(ctx)
-	if errResp := requireAccountSelected(session); errResp != nil {
+	if errResp := s.requireCapability(ctx, capabilityRead); errResp != nil {
 		return errResp
 	}
 	accountID := session.SelectedAccountID
@@ -85,6 +88,55 @@ func (s *Server) toolListMessages(ctx context.Context, params map[string]interfa
 	}
 }
 
+// toolPollAccount retrieves the selected account now instead of waiting for the tick.
+func (s *Server) toolPollAccount(ctx context.Context, _ map[string]interface{}) *ToolResponse {
+	if errResp := s.requireCapability(ctx, capabilityRead); errResp != nil {
+		return errResp
+	}
+	accountID := getSession(ctx).SelectedAccountID
+
+	if s.poller == nil {
+		return errorResponse("NOT_SUPPORTED", "retrieval is not running in this process")
+	}
+
+	inserted, err := s.poller.PollNow(accountID)
+	if errors.Is(err, imappoller.ErrPollTooSoon) {
+		return &ToolResponse{
+			OK:         false,
+			ErrorCode:  "POLL_TOO_SOON",
+			Message:    "this account was polled moments ago; retrieval is rate-limited",
+			Retryable:  true,
+			Suggestion: "wait a few seconds and call msngr_list_messages, or retry the poll",
+		}
+	}
+	if err != nil {
+		slog.Error("manual poll failed", "account_id", accountID, "error", err)
+		return &ToolResponse{
+			OK:        false,
+			ErrorCode: "POLL_FAILED",
+			Message:   "retrieval failed: " + err.Error(),
+			Retryable: true,
+		}
+	}
+
+	acct, err := s.db.GetAccountByID(accountID)
+	if err != nil || acct == nil {
+		slog.Error("get account after poll", "error", err)
+		return errorResponse("INTERNAL_ERROR", "poll succeeded but the account could not be read back")
+	}
+
+	return &ToolResponse{
+		OK:      true,
+		Message: fmt.Sprintf("retrieved %d new message(s)", inserted),
+		Data: map[string]interface{}{
+			"account_id":     accountID,
+			"new_messages":   inserted,
+			"last_polled_at": acct.LastPolledAt,
+			"health_status":  acct.HealthStatus,
+		},
+	}
+}
+
 // containsFold reports whether values contains target, case-insensitively.
 func containsFold(values []string, target string) bool {
 	for _, v := range values {
@@ -97,11 +149,10 @@ func containsFold(values []string, target string) bool {
 
 // toolReadMessage reads a single message with its body.
 func (s *Server) toolReadMessage(ctx context.Context, params map[string]interface{}) *ToolResponse {
-	session := getSession(ctx)
-	if errResp := requireAccountSelected(session); errResp != nil {
+	if errResp := s.requireCapability(ctx, capabilityRead); errResp != nil {
 		return errResp
 	}
-	accountID := session.SelectedAccountID
+	accountID := getSession(ctx).SelectedAccountID
 
 	messageID, ok := paramInt64(params, "message_id")
 	if !ok {
@@ -153,11 +204,10 @@ func (s *Server) toolReadMessage(ctx context.Context, params map[string]interfac
 
 // toolSearchMessages searches messages by subject/from/to.
 func (s *Server) toolSearchMessages(ctx context.Context, params map[string]interface{}) *ToolResponse {
-	session := getSession(ctx)
-	if errResp := requireAccountSelected(session); errResp != nil {
+	if errResp := s.requireCapability(ctx, capabilityRead); errResp != nil {
 		return errResp
 	}
-	accountID := session.SelectedAccountID
+	accountID := getSession(ctx).SelectedAccountID
 
 	query := paramString(params, "query")
 	if query == "" {

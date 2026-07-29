@@ -12,7 +12,7 @@ import (
 // toolMarkMessage marks a message with a flag (read, unread, flagged).
 func (s *Server) toolMarkMessage(ctx context.Context, params map[string]interface{}) *ToolResponse {
 	session := getSession(ctx)
-	if errResp := requireAccountSelected(session); errResp != nil {
+	if errResp := s.requireCapability(ctx, capabilityRead); errResp != nil {
 		return errResp
 	}
 	accountID := session.SelectedAccountID
@@ -59,7 +59,7 @@ func (s *Server) toolMarkMessage(ctx context.Context, params map[string]interfac
 // toolDeleteMessage deletes a message, gated by policy.
 func (s *Server) toolDeleteMessage(ctx context.Context, params map[string]interface{}) *ToolResponse {
 	session := getSession(ctx)
-	if errResp := requireAccountSelected(session); errResp != nil {
+	if errResp := s.requireCapability(ctx, capabilityRead); errResp != nil {
 		return errResp
 	}
 	accountID := session.SelectedAccountID
@@ -119,11 +119,10 @@ func (s *Server) toolDeleteMessage(ctx context.Context, params map[string]interf
 // toolDownloadAttachment downloads an attachment. Denied by default unless agent
 // has the download_attachment capability.
 func (s *Server) toolDownloadAttachment(ctx context.Context, params map[string]interface{}) *ToolResponse {
-	session := getSession(ctx)
-	if errResp := requireAccountSelected(session); errResp != nil {
+	if errResp := s.requireCapability(ctx, capabilityDownloadAttachment); errResp != nil {
 		return errResp
 	}
-	accountID := session.SelectedAccountID
+	accountID := getSession(ctx).SelectedAccountID
 
 	messageID, ok := paramInt64(params, "message_id")
 	if !ok {
@@ -132,21 +131,6 @@ func (s *Server) toolDownloadAttachment(ctx context.Context, params map[string]i
 	filename := paramString(params, "filename")
 	if filename == "" {
 		return errorResponse("INVALID_PARAMS", "filename is required")
-	}
-
-	// Check for the specific download_attachment capability.
-	hasCap, err := s.db.CheckAgentCapability(ctx, session.Agent.ID, accountID, "download_attachment")
-	if err != nil {
-		slog.Error("check agent capability", "error", err)
-		return errorResponse("INTERNAL_ERROR", "failed to verify agent capability")
-	}
-	if !hasCap {
-		return &ToolResponse{
-			OK:         false,
-			ErrorCode:  "ACCESS_DENIED",
-			Message:    "agent does not have the download_attachment capability for this account",
-			Suggestion: "request download_attachment permission from an administrator",
-		}
 	}
 
 	// Look up the message to check if it is stored on disk.

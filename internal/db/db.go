@@ -1004,6 +1004,68 @@ func (db *DB) ListHolds(status string) ([]model.Hold, error) {
 	return holds, rows.Err()
 }
 
+// HoldContext describes a hold together with the queue item it belongs to, so a caller
+// can decide whether the requester is allowed to review it.
+type HoldContext struct {
+	HoldID    int64
+	QueueID   int64
+	AccountID int64
+	Status    string
+	// RequestedByAgentID is the agent that queued the held message, if any.
+	RequestedByAgentID *int64
+}
+
+// GetHoldContext returns the account and requesting agent behind a hold.
+func (db *DB) GetHoldContext(ctx context.Context, holdID int64) (*HoldContext, error) {
+	var hc HoldContext
+	err := db.conn.QueryRowContext(ctx,
+		`SELECT h.id, h.queue_id, h.status, q.account_id, q.agent_id
+		 FROM holds h JOIN outbound_queue q ON q.id = h.queue_id
+		 WHERE h.id = ?`, holdID,
+	).Scan(&hc.HoldID, &hc.QueueID, &hc.Status, &hc.AccountID, &hc.RequestedByAgentID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get hold context %d: %w", holdID, err)
+	}
+	return &hc, nil
+}
+
+// ListHoldsForAgent returns holds on accounts the agent has some permission for.
+// Holds are account-scoped for the same reason message content is.
+func (db *DB) ListHoldsForAgent(ctx context.Context, agentID int64, status string) ([]model.Hold, error) {
+	query := `SELECT h.id, h.queue_id, COALESCE(h.rule_id, 0), h.reason, h.status,
+	                 h.reviewer_id, h.reviewed_at, h.created_at
+	          FROM holds h
+	          JOIN outbound_queue q ON q.id = h.queue_id
+	          WHERE EXISTS (SELECT 1 FROM agent_permissions ap
+	                        WHERE ap.agent_id = ? AND ap.account_id = q.account_id)`
+	args := []any{agentID}
+	if status != "" {
+		query += " AND h.status = ?"
+		args = append(args, status)
+	}
+	query += " ORDER BY h.created_at DESC"
+
+	rows, err := db.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list holds for agent: %w", err)
+	}
+	defer rows.Close()
+
+	holds := []model.Hold{}
+	for rows.Next() {
+		var h model.Hold
+		if err := rows.Scan(&h.ID, &h.QueueID, &h.RuleID, &h.Reason, &h.Status,
+			&h.ReviewerID, &h.ReviewedAt, &h.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan hold: %w", err)
+		}
+		holds = append(holds, h)
+	}
+	return holds, rows.Err()
+}
+
 // ListAccounts returns all accounts.
 func (db *DB) ListAccounts() ([]model.Account, error) {
 	rows, err := db.conn.Query(

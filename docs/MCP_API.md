@@ -52,6 +52,10 @@ Fields are omitted when not applicable. `error_code` and `retryable` only appear
 | `POLICY_DENIED` | Policy engine denied the action |
 | `ATTACHMENT_NOT_AVAILABLE` | Attachment not in filesystem storage |
 | `FOLDER_NOT_RETRIEVED` | Folder holds no retrieved messages; MSNGR only polls `INBOX` |
+| `SELF_REVIEW_FORBIDDEN` | An agent tried to review a hold for a message it queued |
+| `ALREADY_REVIEWED` | The hold has already been approved or rejected |
+| `POLL_TOO_SOON` | `msngr_poll_account` called inside the rate-limit window |
+| `POLL_FAILED` | Retrieval was attempted and failed |
 | `INTERNAL_ERROR` | Server-side error |
 
 ## Required Workflow
@@ -186,7 +190,33 @@ List messages in a mail folder.
 
 `content_hash` is a SHA-256 over the content stored on disk (body parts and attachments). It is absent when the account's storage mode keeps no content.
 
-**Folders.** MSNGR polls `INBOX` only and lists locally stored messages. Requesting a folder that holds no retrieved messages returns `FOLDER_NOT_RETRIEVED` with the folders that do, rather than an empty result — an empty folder, an unpolled one, and one that does not exist call for different responses. In particular there is no `Sent` folder to list: use `msngr_queue_status` for outbound messages.
+**Folders.** MSNGR polls `INBOX` and lists locally stored messages. Requesting a folder that holds no stored messages returns `FOLDER_NOT_RETRIEVED` along with the folders that do, rather than an empty result — an empty folder, an unpolled one, and one that does not exist call for different responses.
+
+Delivered outbound messages are recorded under the account's Sent folder, so `folder: "Sent"` lists what the gateway has sent as well as what it received. `direction` distinguishes them.
+
+---
+
+### msngr_poll_account
+
+Retrieve new mail for the selected account immediately, instead of waiting for the next polling cycle.
+
+**Auth:** Required | **Account:** Required | **Capability:** `read`
+
+No parameters.
+
+**Response data:**
+```json
+{
+  "account_id": 1,
+  "new_messages": 2,
+  "last_polled_at": "2026-07-29T18:31:04Z",
+  "health_status": "ok"
+}
+```
+
+Rate-limited to one poll per account every 10 seconds; a call inside that window returns `POLL_TOO_SOON` with `retryable: true`. Retrieval is a round trip against someone else's mail server, so this is a request, not a guarantee of freshness.
+
+Use it before concluding an inbox is empty: without it, an empty result cannot be distinguished from one the gateway has not looked for yet.
 
 ---
 
@@ -524,11 +554,15 @@ Agent access is controlled per-account via capabilities:
 | Capability | Required by |
 |---|---|
 | *(any)* | `msngr_select_account` (any permission entry grants access) |
+| `read` | `msngr_list_messages`, `msngr_read_message`, `msngr_search_messages`, `msngr_mark_message`, `msngr_delete_message`, `msngr_poll_account` |
 | `send` | `msngr_request_send`, `msngr_validate_send` |
 | `download_attachment` | `msngr_download_attachment` |
-| *(any)* | `msngr_queue_status` (scoped to accounts the agent has a permission on) |
+| `review_hold` | `msngr_review_hold` — not granted by default |
+| *(any)* | `msngr_queue_status`, `msngr_list_holds` (scoped to accounts the agent has a permission on) |
 
-`msngr_list_messages`, `msngr_read_message`, `msngr_search_messages`, `msngr_mark_message`, and `msngr_delete_message` require an account to be selected but no specific capability beyond the initial account mapping.
+Selecting an account proves only that the agent has *some* grant on it. Each verb checks its own capability, so an agent granted read-only cannot send, and one granted send-only cannot read the mailbox.
+
+`review_hold` is deliberately excluded from the defaults granted at agent creation. A hold exists so a person decides; an agent that can release its own held mail has a delay, not a review. Even with the capability, an agent may never review a message it queued itself — that returns `SELF_REVIEW_FORBIDDEN`.
 
 ## Outbound Message Lifecycle
 

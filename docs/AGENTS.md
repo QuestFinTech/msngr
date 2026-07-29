@@ -29,12 +29,14 @@ Navigate to the agent's page and add permissions:
 
 | Capability | Grants |
 |---|---|
+| `read` | List, search, read, mark and delete messages, and trigger a poll |
 | `send` | Queue outbound email from the account (subject to policy) |
-| `read` | Read message content and metadata |
-| `list` | List and search messages |
 | `download_attachment` | Download file attachments from stored messages |
+| `review_hold` | Approve or reject held messages. Not granted by default — see below |
 
-Permissions are per-account. An agent can have different capabilities on different accounts (e.g., send on account 1 but read-only on account 2).
+Permissions are per-account. An agent can have different capabilities on different accounts (e.g., send on account 1 but read-only on account 2). Each capability is checked independently: holding one does not imply another, so a send-only agent cannot read the mailbox it sends from.
+
+Creating an agent whose address matches an existing account auto-grants `read`, `send` and `download_attachment` on it. `review_hold` is never granted automatically: held messages are meant for a human to release, and an agent may never review a message it queued itself even if the capability is granted.
 
 ## Connecting to MSNGR
 

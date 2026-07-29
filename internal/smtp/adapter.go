@@ -52,7 +52,11 @@ type SendResult struct {
 	// angle brackets. It is what correlates the audit record with the copy that
 	// exists on the receiving side.
 	MessageID string
-	Error     string
+	// RawMessage is the exact message handed to the server, kept so the gateway can
+	// file a copy in the account's Sent folder. SMTP leaves nothing behind on the
+	// sender's side, so this is the only copy that exists.
+	RawMessage string
+	Error      string
 }
 
 // NewClient creates a new SMTP client configuration.
@@ -154,10 +158,11 @@ func (c *Client) Send(username, password string, req *SendRequest) *SendResult {
 			Success:      true,
 			SMTPResponse: fmt.Sprintf("%s (quit warning: %v)", smtpResponse, err),
 			MessageID:    messageID,
+			RawMessage:   msg,
 		}
 	}
 
-	return &SendResult{Success: true, SMTPResponse: smtpResponse, MessageID: messageID}
+	return &SendResult{Success: true, SMTPResponse: smtpResponse, MessageID: messageID, RawMessage: msg}
 }
 
 // textprotoCmd issues a command on the client's textproto connection and reads the

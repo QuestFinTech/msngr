@@ -64,6 +64,10 @@ type Server struct {
 	hardPolicy             config.HardPolicyConfig
 	operatorSessionMinutes int
 	mcpHandler             http.Handler
+
+	// cachedSecret holds the operator cookie signing key once loaded.
+	secretMu     sync.Mutex
+	cachedSecret []byte
 }
 
 // SetMCPHandler registers the MCP tool dispatch handler.
@@ -245,51 +249,6 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
-}
-
-func (s *Server) currentOperator(r *http.Request) *model.Operator {
-	c, err := r.Cookie(sessionCookieName)
-	if err != nil || c.Value == "" {
-		return nil
-	}
-	// Session value is "id:email" signed simply with existence in DB.
-	parts := strings.SplitN(c.Value, ":", 2)
-	if len(parts) != 2 {
-		return nil
-	}
-	var id int64
-	if _, err := fmt.Sscanf(parts[0], "%d", &id); err != nil {
-		return nil
-	}
-	op, err := s.db.GetOperatorByID(id)
-	if err != nil || op == nil {
-		return nil
-	}
-	if op.Email != parts[1] {
-		return nil
-	}
-	return op
-}
-
-func (s *Server) setSession(w http.ResponseWriter, op *model.Operator) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    fmt.Sprintf("%d:%s", op.ID, op.Email),
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   s.operatorSessionMinutes * 60,
-	})
-}
-
-func clearSession(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-	})
 }
 
 // --- Rate limiter ---
@@ -1009,10 +968,17 @@ func (s *Server) testServerConnectivity(serverID int64) string {
 // agent's email matches an existing account, and the only set accepted by
 // grant_permission. Revocation accepts arbitrary strings so operators can
 // remove non-standard rows that may have been inserted directly.
+// defaultAgentCapabilities are granted automatically when an agent is created for an
+// address that matches an existing account.
 var defaultAgentCapabilities = []string{"send", "read", "download_attachment"}
 
+// grantableAgentCapabilities are everything an operator may grant by hand. review_hold
+// is deliberately absent from the defaults: it lets an agent release held mail, which
+// is the operator's job.
+var grantableAgentCapabilities = []string{"send", "read", "download_attachment", "review_hold"}
+
 func isKnownCapability(c string) bool {
-	for _, k := range defaultAgentCapabilities {
+	for _, k := range grantableAgentCapabilities {
 		if k == c {
 			return true
 		}
@@ -1175,7 +1141,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		accountEmailByID[ac.ID] = ac.EmailAddress
 	}
 	pd.Data["AccountEmailByID"] = accountEmailByID
-	pd.Data["DefaultCapabilities"] = defaultAgentCapabilities
+	pd.Data["DefaultCapabilities"] = grantableAgentCapabilities
 
 	s.render(w, r, "agents.html", pd)
 }

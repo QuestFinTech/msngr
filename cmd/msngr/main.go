@@ -215,9 +215,10 @@ func cmdRun() {
 
 	// Start background services.
 	poller := imappoller.NewPoller(database, store, cfg.Ticks.IMAPPollMs)
+	mcpSrv.SetPoller(poller)
 	poller.Start(ctx)
 
-	queueProc := queue.NewProcessor(database, cfg.Ticks.QueueProcessMs)
+	queueProc := queue.NewProcessor(database, store, cfg.Ticks.QueueProcessMs)
 	go queueProc.Start(ctx)
 
 	go func() {
