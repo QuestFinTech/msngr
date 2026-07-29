@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -37,23 +38,36 @@ type DB struct {
 }
 
 // Open creates a new database connection and configures SQLite pragmas.
+//
+// Pragmas are passed in the DSN rather than executed after opening. database/sql keeps
+// a pool, and an "PRAGMA ..." executed through it lands on whichever connection happens
+// to serve that call; connections opened later start with the defaults. That left
+// busy_timeout unset on most of the pool, so concurrent writers — the IMAP poller and
+// the queue processor — got an immediate SQLITE_BUSY instead of waiting.
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite", path)
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)",
+		url.PathEscape(path),
+	)
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Configure SQLite for reliability and performance.
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("open database %s: %w", path, err)
 	}
-	for _, p := range pragmas {
-		if _, err := conn.Exec(p); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("exec %s: %w", p, err)
-		}
+
+	// Verify the pragmas took effect rather than trusting the DSN silently.
+	var busyTimeout int
+	if err := conn.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read busy_timeout: %w", err)
+	}
+	if busyTimeout == 0 {
+		conn.Close()
+		return nil, fmt.Errorf("busy_timeout was not applied from the DSN; writers would fail immediately under contention")
 	}
 
 	return &DB{conn: conn}, nil
