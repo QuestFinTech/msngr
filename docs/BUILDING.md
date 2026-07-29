@@ -19,7 +19,7 @@ This compiles the `msngr` binary into the `run/` directory and copies `config.ya
 ## Build manually (without Make)
 
 ```bash
-go build -ldflags "-X main.Version=0.2.0 -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o msngr ./cmd/msngr
+go build -ldflags "-X main.Version=0.3.0 -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o msngr ./cmd/msngr
 ```
 
 ## Cross-compile release binaries
@@ -32,12 +32,12 @@ This builds archives for all supported platforms into `dist/`:
 
 | OS | Architecture | Archive |
 |----|-------------|---------|
-| Linux | amd64 | `msngr-0.2.0-linux-amd64.tar.gz` |
-| Linux | arm64 | `msngr-0.2.0-linux-arm64.tar.gz` |
-| macOS | amd64 (Intel) | `msngr-0.2.0-darwin-amd64.tar.gz` |
-| macOS | arm64 (Apple Silicon) | `msngr-0.2.0-darwin-arm64.tar.gz` |
-| Windows | amd64 | `msngr-0.2.0-windows-amd64.tar.gz` |
-| Windows | arm64 | `msngr-0.2.0-windows-arm64.tar.gz` |
+| Linux | amd64 | `msngr-0.3.0-linux-amd64.tar.gz` |
+| Linux | arm64 | `msngr-0.3.0-linux-arm64.tar.gz` |
+| macOS | amd64 (Intel) | `msngr-0.3.0-darwin-amd64.tar.gz` |
+| macOS | arm64 (Apple Silicon) | `msngr-0.3.0-darwin-arm64.tar.gz` |
+| Windows | amd64 | `msngr-0.3.0-windows-amd64.tar.gz` |
+| Windows | arm64 | `msngr-0.3.0-windows-arm64.tar.gz` |
 
 Each archive contains:
 - `msngr` (or `msngr.exe` on Windows) — the compiled binary
@@ -73,11 +73,11 @@ See [Configuration](../README.md#configuration) in the README for config details
 Tag the release and use `gh` to publish with the built archives:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 
 make release
-gh release create v0.2.0 dist/*.tar.gz dist/checksums.txt \
-  --title "MSNGR v0.2.0" \
+gh release create v0.3.0 dist/*.tar.gz dist/checksums.txt \
+  --title "MSNGR v0.3.0" \
   --notes "Release notes here"
 ```

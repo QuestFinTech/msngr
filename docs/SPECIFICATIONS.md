@@ -12,7 +12,7 @@
 
 ## 0. Implementation status
 
-As of v0.2.0:
+As of v0.3.0:
 
 | Area | Spec | Status |
 |---|---|---|

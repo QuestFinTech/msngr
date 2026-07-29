@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help build release run init clean test test-cover lint vet fmt check
 
-VERSION ?= 0.2.0
+VERSION ?= 0.3.0
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD   ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD)"
