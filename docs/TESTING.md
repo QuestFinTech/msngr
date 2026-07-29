@@ -6,9 +6,9 @@
 - Playwright MCP server running (for web UI tests)
 - Master Admin operator account configured
 - Two agents configured:
-  - **Claude** (`claude@sys.lu`) — with a valid API token
-  - **Test User** (`test@sys.lu`) — with a valid API token
-- Two mail accounts: `claude@sys.lu` (ID 1), `test@sys.lu` (ID 2)
+  - **Claude** (`claude@example.com`) — with a valid API token
+  - **Test User** (`test@example.com`) — with a valid API token
+- Two mail accounts: `claude@example.com` (ID 1), `test@example.com` (ID 2)
 - Permissions:
   - Claude: `send` + `read` on account 1, `read` + `download_attachment` on account 2
   - Test User: `send` + `read` on account 2
@@ -28,8 +28,8 @@ Create the following rules via the Rules > Manage page:
 
 **Rule 1: Allow internal mail** (priority 10)
 - Action: allow
-- Match: `{"domain": "sys.lu", "action_type": "send"}`
-- Explanation: "Allow sending to internal sys.lu domain"
+- Match: `{"domain": "example.com", "action_type": "send"}`
+- Explanation: "Allow sending to internal example.com domain"
 
 **Rule 2: Hold external mail** (priority 20)
 - Action: hold
@@ -52,30 +52,30 @@ criteria never match one. Non-send rules can only match on `action_type`,
 
 ### T1.3 — Verify Rules on Simulate Page
 - Navigate to Rules > Simulate
-- Test: agent "Claude", account "claude@sys.lu", action "send", recipient "test@sys.lu", subject "Hello"
+- Test: agent "Claude", account "claude@example.com", action "send", recipient "test@example.com", subject "Hello"
 - Expected: **allow** (matches Rule 1 — internal domain)
-- Test: agent "Claude", account "claude@sys.lu", action "send", recipient "external@gmail.com", subject "Hello"
+- Test: agent "Claude", account "claude@example.com", action "send", recipient "external@gmail.com", subject "Hello"
 - Expected: **hold** (matches Rule 2 — external domain)
-- Test: agent "Claude", account "claude@sys.lu", action "send", recipient "test@sys.lu", subject "CONFIDENTIAL report"
+- Test: agent "Claude", account "claude@example.com", action "send", recipient "test@example.com", subject "CONFIDENTIAL report"
 - Expected: **deny** (matches Rule 3 — keyword block, priority 5 wins)
 
 ## Phase 2: Agent Authentication (MCP Login)
 
 ### T2.1 — Login as Claude
-- Call `msngr_login` with `login_email: "claude@sys.lu"` and Claude's API token
-- Expected: success, response includes `agent_id`, `display_name: "Claude"`, `agent_email: "claude@sys.lu"`
+- Call `msngr_login` with `login_email: "claude@example.com"` and Claude's API token
+- Expected: success, response includes `agent_id`, `display_name: "Claude"`, `agent_email: "claude@example.com"`
 
 ### T2.2 — Login with Invalid Token
-- Call `msngr_login` with `login_email: "claude@sys.lu"` and an invalid token (e.g. `"0000000000000000000000000000000000000000000000000000000000000000"`)
+- Call `msngr_login` with `login_email: "claude@example.com"` and an invalid token (e.g. `"0000000000000000000000000000000000000000000000000000000000000000"`)
 - Expected: **invalid credentials** (generic error, no detail leak)
 
 ### T2.3 — Login with Mismatched Email
-- Call `msngr_login` with `login_email: "wrong@sys.lu"` and Claude's valid token
+- Call `msngr_login` with `login_email: "wrong@example.com"` and Claude's valid token
 - Expected: **invalid credentials** (token exists but email doesn't match)
 
 ### T2.4 — Login as Test User
-- Call `msngr_login` with `login_email: "test@sys.lu"` and Test User's API token
-- Expected: success, response includes `display_name: "Test User"`, `agent_email: "test@sys.lu"`
+- Call `msngr_login` with `login_email: "test@example.com"` and Test User's API token
+- Expected: success, response includes `display_name: "Test User"`, `agent_email: "test@example.com"`
 
 ## Phase 3: Agent Claude — MCP Operations
 
@@ -83,15 +83,15 @@ Authenticate as Claude via `msngr_login` before running these tests.
 
 ### T3.1 — List Accounts
 - Call `msngr_list_accounts`
-- Expected: returns 2 accounts (claude@sys.lu and test@sys.lu) — Claude has permissions on both
+- Expected: returns 2 accounts (claude@example.com and test@example.com) — Claude has permissions on both
 
 ### T3.2 — Select Account
-- Call `msngr_select_account` with `account_id: 1` (claude@sys.lu)
+- Call `msngr_select_account` with `account_id: 1` (claude@example.com)
 - Expected: success, account selected
 
 ### T3.3 — Test Account Connectivity
 - Call `msngr_test_account_connectivity` with `account_id: 1`
-- Expected: success with IMAP and SMTP status for claude@sys.lu (both `ok: true` if mail server is reachable)
+- Expected: success with IMAP and SMTP status for claude@example.com (both `ok: true` if mail server is reachable)
 
 ### T3.4 — Test Connectivity on Unauthorized Account
 - Call `msngr_test_account_connectivity` with a non-existent or unauthorized `account_id`
@@ -99,10 +99,10 @@ Authenticate as Claude via `msngr_login` before running these tests.
 
 ### T3.5 — Send Internal Mail (should be ALLOWED)
 - Call `msngr_request_send`:
-  - to: `test@sys.lu`
+  - to: `test@example.com`
   - subject: `E2E Test: Internal mail from Claude`
   - body_text: `This is an internal test message from Claude to Test User.`
-- Expected: **queued** (policy allows internal sys.lu domain)
+- Expected: **queued** (policy allows internal example.com domain)
 - Save the `correlation_id`
 
 ### T3.6 — Validate External Mail (should be HELD)
@@ -114,14 +114,14 @@ Authenticate as Claude via `msngr_login` before running these tests.
 
 ### T3.7 — Send Blocked Mail (should be DENIED)
 - Call `msngr_request_send`:
-  - to: `test@sys.lu`
+  - to: `test@example.com`
   - subject: `CONFIDENTIAL project data`
   - body_text: `This message contains CONFIDENTIAL information.`
 - Expected: **POLICY_DENIED** (matches Rule 3 — keyword block)
 
 ### T3.8 — Send External Mail (should be HELD)
 - Call `msngr_request_send`:
-  - to: `external@example.com`
+  - to: `external@example.org`
   - subject: `E2E Test: Held message from Claude`
   - body_text: `This message should be held for operator review.`
 - Expected: **held** for review (matches Rule 2 — external domain)
@@ -135,16 +135,16 @@ Authenticate as Claude via `msngr_login` before running these tests.
 - Expected: success (may be empty if no inbound mail yet)
 
 ### T3.11 — Access Second Account (read-only)
-- Call `msngr_select_account` with `account_id: 2` (test@sys.lu)
+- Call `msngr_select_account` with `account_id: 2` (test@example.com)
 - Expected: success
 - Call `msngr_list_messages`
 - Expected: success (read access granted)
 
 ### T3.12 — Attempt Send on Read-Only Account (should be DENIED)
 - With account 2 selected, call `msngr_request_send`:
-  - to: `claude@sys.lu`
+  - to: `claude@example.com`
   - subject: `Unauthorized send`
-  - body_text: `Claude should not be able to send from test@sys.lu`
+  - body_text: `Claude should not be able to send from test@example.com`
 - Expected: **deny** — Claude has no send permission on account 2
 
 ## Phase 4: Agent Test User — MCP Operations
@@ -153,19 +153,19 @@ Authenticate as Test User via `msngr_login` before running these tests.
 
 ### T4.1 — List Accounts
 - Call `msngr_list_accounts`
-- Expected: returns only 1 account (test@sys.lu) — Test User has no permissions on account 1
+- Expected: returns only 1 account (test@example.com) — Test User has no permissions on account 1
 
 ### T4.2 — Attempt to Select Unauthorized Account
-- Call `msngr_select_account` with `account_id: 1` (claude@sys.lu)
+- Call `msngr_select_account` with `account_id: 1` (claude@example.com)
 - Expected: **ACCESS_DENIED**
 
 ### T4.3 — Select Own Account
-- Call `msngr_select_account` with `account_id: 2` (test@sys.lu)
+- Call `msngr_select_account` with `account_id: 2` (test@example.com)
 - Expected: success
 
 ### T4.4 — Reply to Claude (Internal, should be ALLOWED)
 - Call `msngr_request_send`:
-  - to: `claude@sys.lu`
+  - to: `claude@example.com`
   - subject: `E2E Test: Reply from Test User`
   - body_text: `Received your message. This is a reply from Test User.`
 - Expected: **queued** (internal domain allowed)
@@ -197,7 +197,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 
 ### T6.1 — Test User Sends to Claude
 - As Test User (account 2), call `msngr_request_send`:
-  - to: `claude@sys.lu`
+  - to: `claude@example.com`
   - subject: `E2E Test: Inbound to Claude`
   - body_text: `This is a cross-agent message from Test User to Claude.`
 - Expected: **queued** (internal domain allowed)
@@ -205,7 +205,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 
 ### T6.2 — Claude Reads Inbound Mail
 - As Claude, select account 1, call `msngr_list_messages`
-- Verify the inbound message from test@sys.lu appears
+- Verify the inbound message from test@example.com appears
 - Call `msngr_read_message` with the message ID
 - Verify subject and body match
 
@@ -233,7 +233,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 
 ### T8.1 — Send HTML Email
 - As Claude (account 1), call `msngr_request_send`:
-  - to: `test@sys.lu`
+  - to: `test@example.com`
   - subject: `E2E HTML Email Test`
   - body_text: `This is the plain text version.`
   - body_html: `<html><body><h1>Hello</h1><p>This is <b>HTML</b> with <a href='https://example.com'>a link</a>.</p></body></html>`
@@ -249,7 +249,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 
 ### T9.1 — Send Email with Attachments
 - As Claude (account 1), call `msngr_request_send`:
-  - to: `test@sys.lu`
+  - to: `test@example.com`
   - subject: `E2E Test: Attachment round-trip`
   - body_text: `This message has a text file and a binary image attached.`
   - attachments:
@@ -278,7 +278,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 ## Phase 10: Queue Processor Delivery Verification
 
 ### T10.1 — Claude Sends Internal Mail
-- As Claude (account 1), send to `test@sys.lu`:
+- As Claude (account 1), send to `test@example.com`:
   - subject: `E2E Test: Queue delivery verification`
   - body_text: `This message verifies end-to-end queue delivery.`
 - Expected: queued, then delivered by queue processor
@@ -290,7 +290,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 ## Phase 11: Hold Approval + Delivery
 
 ### T11.1 — Claude Sends External Mail (HELD)
-- As Claude (account 1), send to `external@example.com`
+- As Claude (account 1), send to `external@example.org`
 - Expected: held
 
 ### T11.2 — Operator Approves + Queue Delivers
@@ -365,7 +365,7 @@ Authenticate as Test User via `msngr_login` before running these tests.
 ## Phase 15: Retrieval Control
 
 ### T15.1 — Poll on Demand
-- As Test User, send mail to `claude@sys.lu`
+- As Test User, send mail to `claude@example.com`
 - As Claude, immediately call `msngr_poll_account`
 - Expected: success, `new_messages` reflecting the retrieval, and a fresh
   `last_polled_at`

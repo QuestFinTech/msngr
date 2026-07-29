@@ -93,7 +93,7 @@ Authenticate with the gateway. Must be called before any other tool (unless usin
 {
   "agent_id": 1,
   "display_name": "Claude",
-  "agent_email": "claude@sys.lu"
+  "agent_email": "claude@example.com"
 }
 ```
 
@@ -358,8 +358,8 @@ Check the delivery state of a previously requested send.
   "means": "accepted by the SMTP server; see last_smtp_response for the server's reply",
   "account_id": 13,
   "correlation_id": "53a132f6-...",
-  "from": "ash@sys.lu",
-  "to": ["mike@sys.lu"],
+  "from": "ash@example.com",
+  "to": ["mike@example.com"],
   "cc": [],
   "subject": "Hello",
   "attempts": 1,

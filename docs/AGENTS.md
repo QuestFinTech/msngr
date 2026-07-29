@@ -12,7 +12,7 @@ An agent is an automated MCP client (e.g., Claude, a custom bot) that interacts 
 
 Navigate to **Agents** in the web UI and create a new agent:
 
-- **Agent Email** — The agent's identity (e.g., `claude@sys.lu`). Must be unique. This is the login identity, not necessarily a real mailbox.
+- **Agent Email** — The agent's identity (e.g., `claude@example.com`). Must be unique. This is the login identity, not necessarily a real mailbox.
 - **Display Name** — Human-readable name (e.g., `Claude`). Must be unique. Used in audit logs.
 
 ### 2. Create an API Token
@@ -62,7 +62,7 @@ No `Authorization` header is needed in the config — the agent authenticates at
 Call `msngr_login` as the first tool invocation:
 
 ```
-msngr_login(login_email: "claude@sys.lu", token: "<your-token>")
+msngr_login(login_email: "claude@example.com", token: "<your-token>")
 ```
 
 On success, the MCP session is authenticated for all subsequent calls. The session persists until it expires (configurable via Settings, default 60 minutes).
@@ -110,10 +110,10 @@ All outbound email is policy-evaluated. Messages are never sent directly — the
 msngr_select_account(account_id: 1)
 
 # Dry-run: check what policy would decide
-msngr_validate_send(to: "colleague@sys.lu", subject: "Update", body_text: "...")
+msngr_validate_send(to: "colleague@example.com", subject: "Update", body_text: "...")
 
 # Actually send (queues the message)
-msngr_request_send(to: "colleague@sys.lu", subject: "Update", body_text: "...")
+msngr_request_send(to: "colleague@example.com", subject: "Update", body_text: "...")
 ```
 
 Possible outcomes:
