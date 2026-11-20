@@ -22,6 +22,14 @@ This compiles the `msngr` binary into the `run/` directory and copies `config.ya
 go build -ldflags "-X main.Version=0.3.0 -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o msngr ./cmd/msngr
 ```
 
+A plain `go build -o msngr ./cmd/msngr` in a git checkout also reports what it was
+built from: without `-ldflags`, `msngr version` and the `version` field of `GET /health`
+fall back to the build information Go embeds, which holds the module version (taken
+from the tag, or a pseudo-version between tags) and the commit, marked `-dirty` when
+the tree had uncommitted changes. Only the build time stays `unknown`, because Go
+records the commit time, not the build time. Values passed with `-ldflags` take
+precedence.
+
 ## Cross-compile release binaries
 
 ```bash
