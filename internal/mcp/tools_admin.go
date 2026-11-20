@@ -234,9 +234,11 @@ func (s *Server) toolListAccounts(ctx context.Context, _ map[string]interface{})
 		return errorResponse("INTERNAL_ERROR", "failed to list accounts")
 	}
 
+	// Name the agent whose grants were checked: an empty list otherwise reads as
+	// "no accounts exist" rather than "this agent holds no permission on any".
 	return &ToolResponse{
 		OK:      true,
-		Message: fmt.Sprintf("found %d permitted accounts", len(accounts)),
+		Message: fmt.Sprintf("found %d permitted accounts for agent %s", len(accounts), session.Agent.AgentEmail),
 		Data:    accounts,
 	}
 }

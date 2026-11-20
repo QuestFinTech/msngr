@@ -135,6 +135,10 @@ List mail accounts the agent has permission to access.
 
 `health_changed_at`, `health_error` and `last_polled_at` are omitted when empty.
 
+The message names the agent whose permissions were checked, for example
+`found 0 permitted accounts for agent agent@example.com`. An empty list means that
+agent holds no permission on any enabled account, not that no accounts exist.
+
 ---
 
 ### msngr_select_account
