@@ -53,8 +53,12 @@ dist/
 
 # Project-local Claude/agent config
 CLAUDE.md
+.claude/
 AGENTS.md
 !docs/AGENTS.md
+
+# Seat-local launcher (sources .env)
+start.sh
 
 # Editor/IDE
 # .idea/
