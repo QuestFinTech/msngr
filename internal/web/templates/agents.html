@@ -163,7 +163,7 @@
     </div>
 </div>
 
-<script nonce="{{.CSPNonce}}">
+<script nonce="{{.Nonce}}">
 (function() {
     var agents = [{{range .Data.Agents}}"{{.DisplayName}}",{{end}}];
     var input = document.getElementById('display_name');
