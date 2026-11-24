@@ -163,6 +163,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 					delete(s.sessions, sessionID)
 					delete(s.sessions, "token:"+plainToken)
 					s.sessionsMu.Unlock()
+				} else if !s.sessionTokenActive(existing) {
+					// The token was revoked (or the agent disabled) after this session was
+					// cached: drop it and fall through to a fresh lookup, which will refuse.
+					s.evictSession(existing)
 				} else {
 					// Bridge: ensure the session is also keyed by the current Mcp-Session-Id
 					// so withAuth (which looks up via req.Session.ID()) can find it. The first
@@ -244,6 +248,12 @@ func (s *Server) withAuth(handler toolFunc) func(context.Context, *sdkmcp.CallTo
 			return mcpToolError("SESSION_EXPIRED", "MCP session has expired. Please reconnect."), nil
 		}
 
+		// A cached session must not outlive its token: re-check on every call.
+		if !s.sessionTokenActive(session) {
+			s.evictSession(session)
+			return mcpToolError("AUTHENTICATION_REQUIRED", "Invalid or missing API token."), nil
+		}
+
 		ctx = withSession(ctx, session)
 		slog.Info("MCP tool invoked", "tool", req.Params.Name, "agent", session.Agent.DisplayName, "account_id", session.SelectedAccountID)
 
@@ -251,6 +261,31 @@ func (s *Server) withAuth(handler toolFunc) func(context.Context, *sdkmcp.CallTo
 		params := parseArgs(req)
 		resp := handler(ctx, params)
 		return convertResponse(resp), nil
+	}
+}
+
+// sessionTokenActive reports whether the token behind a cached session is still enabled.
+// It fails closed: a database error counts as inactive.
+func (s *Server) sessionTokenActive(session *model.MCPSession) bool {
+	if session == nil || session.Token == nil {
+		return false
+	}
+	ok, err := s.db.IsTokenActive(session.Token.ID)
+	if err != nil {
+		slog.Error("token active check failed", "token_id", session.Token.ID, "error", err)
+		return false
+	}
+	return ok
+}
+
+// evictSession removes every session-map entry that points at the given session.
+func (s *Server) evictSession(session *model.MCPSession) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	for k, v := range s.sessions {
+		if v == session {
+			delete(s.sessions, k)
+		}
 	}
 }
 

@@ -1882,6 +1882,21 @@ func (db *DB) UpdateTokenLastUsed(tokenID int64) error {
 	return err
 }
 
+// IsTokenActive reports whether a token, and the agent it belongs to, are still enabled.
+// Cached MCP sessions call this on every request so that a revoked token stops working
+// at once instead of when its session times out.
+func (db *DB) IsTokenActive(tokenID int64) (bool, error) {
+	var n int
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM agent_tokens at JOIN agents a ON a.id = at.agent_id
+		 WHERE at.id = ? AND at.enabled = 1 AND a.enabled = 1`, tokenID,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check token active: %w", err)
+	}
+	return n > 0, nil
+}
+
 // RevokeToken disables a token so it can no longer be used for authentication.
 func (db *DB) RevokeToken(tokenID int64) error {
 	_, err := db.conn.Exec("UPDATE agent_tokens SET enabled = 0 WHERE id = ?", tokenID)

@@ -1046,8 +1046,13 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					pd.Error = "Invalid agent."
 				} else {
-					// Revoke all existing tokens, then create a new one.
-					_ = s.db.RevokeAllTokensForAgent(agentID)
+					// Revoke all existing tokens, then create a new one. If the revoke
+					// fails, stop: a new token next to still-valid old ones is worse
+					// than no new token.
+					if err := s.db.RevokeAllTokensForAgent(agentID); err != nil {
+						pd.Error = "Could not revoke the existing tokens: " + err.Error()
+						break
+					}
 					plaintext, err := s.db.CreateAgentToken(agentID)
 					if err != nil {
 						pd.Error = "Could not create token: " + err.Error()
