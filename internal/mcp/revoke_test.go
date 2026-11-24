@@ -119,3 +119,24 @@ func textOf(res *sdkmcp.CallToolResult) string {
 	}
 	return b.String()
 }
+
+// If the token check itself fails (database unavailable), a cached session must be refused, not trusted.
+func TestSessionTokenActiveFailsClosed(t *testing.T) {
+	s, database, _, plain := newRevokeTestServer(t)
+	if !authed(s, plain) {
+		t.Fatal("valid token should authenticate")
+	}
+	s.sessionsMu.RLock()
+	session := s.sessions["token:"+plain]
+	s.sessionsMu.RUnlock()
+	if !s.sessionTokenActive(session) {
+		t.Fatal("active token reported inactive")
+	}
+	database.Close()
+	if s.sessionTokenActive(session) {
+		t.Fatal("token check passed although the database is closed")
+	}
+	if s.sessionTokenActive(nil) {
+		t.Fatal("nil session reported active")
+	}
+}
